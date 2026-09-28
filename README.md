@@ -11,7 +11,8 @@ Python 기반 멀티 에이전트 인프라 운영 분석 시스템입니다.
 | 문서 | 내용 |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 시스템 구성, 에이전트 역할, 공통 입출력 형식, 데이터 흐름 (설계 초안) |
-| [docs/development.md](docs/development.md) | 개발 환경, 디렉터리 구조, 테스트, 단계별 구현 계획, Issue·PR 절차 |
+| [docs/environment.md](docs/environment.md) | 개발·테스트 환경, 설정 구조, 확인된 데이터 소스·지표, 조회 카탈로그 (설계) |
+| [docs/development.md](docs/development.md) | 개발 도구, 디렉터리 구조, 테스트, 단계별 구현 계획, Issue·PR 절차 |
 | [CLAUDE.md](CLAUDE.md) | 개발 에이전트 작업 규칙 |
 
 ## 프로젝트 목표
