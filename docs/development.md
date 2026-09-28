@@ -2,28 +2,34 @@
 
 > **상태: 초기 설정 전.** 현재 저장소에는 문서만 있으며 애플리케이션 코드, 의존성 정의, 테스트, CI가 없습니다.
 > 아래의 도구·명령·디렉터리는 **제안**이며, 실제로 도입된 항목만 "도입됨"으로 표시합니다.
-> 시스템 설계는 [architecture.md](architecture.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
+> 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
 
 | 항목 | 제안 | 상태 |
 | --- | --- | --- |
+| 개발 실행 위치 | Windows 호스트 + SSH 터널로 개발 서버(OTel Demo, k3d) 연동 ([environment.md](environment.md) 1절) | 결정 |
 | 목표 실행 환경 | Rocky Linux 9 계열, 컨테이너, Kubernetes | 미구성 |
 | Python | 3.11 이상 (Rocky Linux 9 AppStream의 `python3.11`/`python3.12` 사용 가능) | 미확정 |
 | 패키지·가상환경 | `pyproject.toml` + `uv` 또는 `pip`/`venv` | 미도입 |
 | 린트·포맷 | `ruff` | 미도입 |
 | 타입 검사 | `mypy` | 미도입 |
-| 테스트 | `pytest`, `pytest-asyncio` | 미도입 |
+| 테스트 | `pytest`, `pytest-asyncio`, HTTP 목(`respx`) | 미도입 |
+| 모델 SDK | `claude-agent-sdk` (1차 어댑터, [architecture.md](architecture.md) 10.1절) | 미도입 |
 
 도입 후 예상 명령(현재 실행 불가):
 
 ```bash
+# Linux (Rocky Linux 9)
 python3.11 -m venv .venv && source .venv/bin/activate
+# Windows (PowerShell)
+py -3.11 -m venv .venv; .venv\Scripts\Activate.ps1
+
 pip install -e ".[dev]"
 ruff check . && ruff format --check .
 mypy src
-pytest -m "not integration"          # 단위·계약 테스트
-pytest -m integration                # 실제 데이터 소스 연결 필요
+pytest -m "not live"                 # 단위·계약 테스트 (CI)
+INFRA_AGENT_LIVE_TESTS=1 pytest -m live   # 개발 서버 연동, SSH 터널 필요 (PowerShell은 $env:INFRA_AGENT_LIVE_TESTS="1")
 ```
 
 위 명령이 실제로 동작하게 되면 이 절과 [CLAUDE.md](../CLAUDE.md)의 검증 명령을 함께 갱신합니다.
@@ -46,13 +52,14 @@ infra_agent/
 │  └─ development.md
 ├─ pyproject.toml
 ├─ config/
-│  ├─ example.yaml              # 비밀값 없는 설정 예시
-│  └─ query_catalog/            # 분석 항목별 PromQL/LogQL/TraceQL 후보
+│  ├─ example.yaml              # 비밀값·내부 주소 없는 설정 예시
+│  └─ catalog/                  # 환경별 조회 카탈로그 (예: otel-demo.yaml)
 ├─ src/infra_agent/
 │  ├─ config/                   # 설정 로딩·검증
 │  ├─ schemas/                  # AnalysisContext, AgentResult 등 공통 형식
 │  ├─ llm/                      # 모델 제공자 어댑터
 │  ├─ datasources/              # prometheus, loki, tempo, kubernetes, hubble, mcp
+│  ├─ discovery/                # 지표·라벨·최신성 탐색 (카탈로그 후보 생성)
 │  ├─ tools/                    # 읽기 전용 도구 정의, 에이전트별 허용 목록
 │  ├─ analysis/                 # 기준 구간 비교, 임계값 판정 등 결정적 분석
 │  ├─ agents/                   # coordinator, server, network, db, service, kubernetes
@@ -63,9 +70,10 @@ infra_agent/
 ├─ tests/
 │  ├─ unit/
 │  ├─ contract/                 # 데이터 소스 응답 형식 처리 (가상 응답)
-│  ├─ integration/              # 실제 데이터 소스 연결 (선택 실행)
+│  ├─ live/                     # 개발 서버 실제 연동 (live 마커, 선택 실행)
 │  ├─ eval/                     # 대표 운영 질문 답변 품질 평가
 │  └─ fixtures/synthetic/       # 테스트용 가상 데이터만
+├─ var/                         # 탐색 보고서 등 로컬 산출물 (Git 제외)
 └─ deploy/                      # Containerfile, Kubernetes 매니페스트, RBAC
 ```
 
@@ -85,7 +93,7 @@ infra_agent/
 | --- | --- | --- | --- |
 | 단위 | 시간 범위 정규화, 에이전트 선택, 판정 로직, 예산·타임아웃·재시도, 마스킹 | 가상 | 항상 |
 | 계약 | 데이터 소스 응답 파싱, 빈 결과·오류·지연 데이터 처리 | 가상 응답 fixture | 항상 |
-| 연동 | 실제 Prometheus/Loki/Tempo/Kubernetes 연결, 가용성 점검 | 실제(읽기 전용) | `integration` 마커, 연결 설정이 있을 때만 |
+| 개발 서버 연동 | 실제 Prometheus/Loki/Tempo(/Kubernetes) 연결, 가용성 점검, 탐색 | 실제(읽기 전용) | `live` 마커, `INFRA_AGENT_LIVE_TESTS=1`, SSH 터널 실행 중 ([environment.md](environment.md) 5절) |
 | 품질 평가 | 대표 질문에 대한 에이전트 선택, 근거 일치, 금지 주장 여부 | 가상 시나리오 또는 실제 환경 | 수동 또는 별도 작업 |
 
 ### 5.1 가상 데이터와 실제 데이터 구분
@@ -108,19 +116,33 @@ README.md의 대표 질문마다 다음을 확인합니다.
 
 ## 6. 단계별 구현 계획
 
-각 단계는 별도 Issue로 관리합니다. 체크 표시는 해당 단계의 PR이 병합되고 검증이 끝난 뒤에만 합니다.
+각 단계는 별도 Issue로 관리합니다. 상태는 해당 단계의 PR이 병합되고 완료 조건이 검증된 뒤에만 "완료"로 바꿉니다.
 
-| 단계 | 내용 | 완료 조건 | 상태 |
-| --- | --- | --- | --- |
-| 0 | 개발 기반 문서 (이 문서, architecture, CLAUDE.md) | 문서 PR 병합 | 진행 중 |
-| 1 | 프로젝트 골격: `pyproject.toml`, 설정 로딩, 공통 스키마, 린트·테스트 설정, 모델·조정 방식 결정 | 단위 테스트 실행 가능 | 계획 |
-| 2 | Prometheus 읽기 전용 조회와 가용성 점검 | 계약 테스트 + 연동 테스트(환경 있을 때) | 계획 |
-| 3 | 단일 에이전트(Server) 질문→조회→답변 흐름, CLI | "현재 서버 상태" 질문 end-to-end | 계획 |
-| 4 | Coordinator와 실행기(병렬·순차, 타임아웃, 재시도, 예산, 부분 실패) | 실행 제어 단위 테스트 | 계획 |
-| 5 | Kubernetes·Service(Loki/Tempo) 에이전트 | 대표 질문 평가 | 계획 |
-| 6 | Network·DB 에이전트 (가용 데이터 기준, 부족 시 수집 설정 제안) | 대표 질문 평가 | 계획 |
-| 7 | 근거 검증·답변 형식 고도화, 품질 평가 세트 | 평가 기준 충족 | 계획 |
-| 8 | 컨테이너 이미지, Kubernetes 배포·RBAC, 운영 문서 | Rocky Linux 9 기반 이미지 실행 확인 | 계획 |
+순서 원칙:
+
+1. 환경마다 지표가 다르다는 위험을 먼저 줄이기 위해 **탐색과 조회 카탈로그**를 앞에 둡니다.
+2. 에이전트 하나로 질문→조회→답변 흐름을 먼저 완성한 뒤 에이전트를 늘립니다.
+3. 모델 없이 동작하는 결정적 분석을 먼저 만들어, 테스트와 기본 동작이 모델·데이터 정책 결정에 묶이지 않게 합니다.
+
+| # | 작업 | 주요 산출물 | 완료 조건 | 선행 | 상태 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 개발 기반 문서 | CLAUDE.md, architecture.md, development.md | PR 병합 | – | 완료 (#1, PR #2) |
+| 1 | 환경·연동 설계 반영 | environment.md, architecture.md 갱신 | PR 병합 | 0 | 진행 중 (#3) |
+| 2 | 프로젝트 골격 | `pyproject.toml`, 설정 로딩(프로필), 공통 스키마, 비밀값 마스킹, pytest·ruff·mypy, GitHub Actions CI | CI에서 `not live` 테스트·린트 통과 | 1 | 계획 |
+| 3 | Prometheus 조회와 탐색 | Prometheus 클라이언트, 가용성 점검, `discover` 명령, 카탈로그 로더 | 가상 응답 테스트 통과, 개발 서버 탐색 보고서 생성(live) | 2 | 계획 |
+| 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 계획 |
+| 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 계획 |
+| 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 계획 |
+| 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 계획 |
+| 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 계획 |
+| 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트, 권한 점검, `k8s_*` 도구 | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 계획 |
+| 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 계획 |
+| 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 계획 |
+| 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 계획 |
+| 12 | 교차 분석과 품질 평가 | Service → (Network ∥ DB) 흐름, 결과 종합, README 대표 질문 평가 세트 | 대표 질문 7개 평가 기록 | 8–11 | 계획 |
+| 13 | 배포·확장 | Containerfile(Rocky Linux 9), Kubernetes 배포·RBAC, MCP 경로, HTTP API | 클러스터 내부 읽기 전용 실행 확인 | 12 | 계획 |
+
+8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 데이터 정책이 결정된 뒤에만 사용합니다.
 
 ## 7. Issue·PR 절차
 
