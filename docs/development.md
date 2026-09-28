@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 초기 설정 전.** 현재 저장소에는 문서만 있으며 애플리케이션 코드, 의존성 정의, 테스트, CI가 없습니다.
-> 아래의 도구·명령·디렉터리는 **제안**이며, 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 2단계(프로젝트 골격) 진행 중.** 패키지 구성, 설정 로딩, 공통 스키마, 비밀값 마스킹, 테스트·CI가 도입되었습니다(#5).
+> 데이터 소스·에이전트·모델 연동은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -10,14 +10,16 @@
 | --- | --- | --- |
 | 개발 실행 위치 | Windows 호스트 + SSH 터널로 개발 서버(OTel Demo, k3d) 연동 ([environment.md](environment.md) 1절) | 결정 |
 | 목표 실행 환경 | Rocky Linux 9 계열, 컨테이너, Kubernetes | 미구성 |
-| Python | 3.11 이상 (Rocky Linux 9 AppStream의 `python3.11`/`python3.12` 사용 가능) | 미확정 |
-| 패키지·가상환경 | `pyproject.toml` + `uv` 또는 `pip`/`venv` | 미도입 |
-| 린트·포맷 | `ruff` | 미도입 |
-| 타입 검사 | `mypy` | 미도입 |
-| 테스트 | `pytest`, `pytest-asyncio`, HTTP 목(`respx`) | 미도입 |
+| Python | 3.11 이상 (`requires-python >=3.11`). CI: Linux 3.11·3.12, Windows 3.11 | 도입됨 |
+| 패키지·가상환경 | `pyproject.toml`(hatchling) + `pip`/`venv` | 도입됨 |
+| 린트·포맷 | `ruff` (설정: `pyproject.toml`) | 도입됨 |
+| 타입 검사 | `mypy --strict` + pydantic 플러그인 (대상: `src`) | 도입됨 |
+| 테스트 | `pytest`, `pytest-asyncio` | 도입됨 |
+| HTTP 목 | `respx` | 미도입 (3단계) |
+| CI | GitHub Actions `.github/workflows/ci.yml` | 도입됨 |
 | 모델 SDK | `claude-agent-sdk` (1차 어댑터, [architecture.md](architecture.md) 10.1절) | 미도입 |
 
-도입 후 예상 명령(현재 실행 불가):
+검증 명령:
 
 ```bash
 # Linux (Rocky Linux 9)
@@ -25,14 +27,19 @@ python3.11 -m venv .venv && source .venv/bin/activate
 # Windows (PowerShell)
 py -3.11 -m venv .venv; .venv\Scripts\Activate.ps1
 
-pip install -e ".[dev]"
-ruff check . && ruff format --check .
-mypy src
-pytest -m "not live"                 # 단위·계약 테스트 (CI)
-INFRA_AGENT_LIVE_TESTS=1 pytest -m live   # 개발 서버 연동, SSH 터널 필요 (PowerShell은 $env:INFRA_AGENT_LIVE_TESTS="1")
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy                       # 대상: src (pyproject.toml)
+python -m pytest -m "not live"       # 단위 테스트 (CI와 동일)
+
+# 개발 서버 연동 테스트 (SSH 터널 필요, 3단계부터 테스트 추가 예정)
+INFRA_AGENT_LIVE_TESTS=1 python -m pytest -m live        # Linux
+$env:INFRA_AGENT_LIVE_TESTS="1"; python -m pytest -m live  # Windows PowerShell
 ```
 
-위 명령이 실제로 동작하게 되면 이 절과 [CLAUDE.md](../CLAUDE.md)의 검증 명령을 함께 갱신합니다.
+Linux(Python 3.11, 3.12)에서 `live`를 제외한 명령을 실행해 통과를 확인했습니다. Windows 실행은 CI(windows-latest)로 확인합니다. 현재 `live` 테스트는 없습니다.
+명령이 바뀌면 이 절과 [CLAUDE.md](../CLAUDE.md)의 검증 명령을 함께 갱신합니다.
 
 ## 2. 설정과 비밀값
 
@@ -41,7 +48,9 @@ INFRA_AGENT_LIVE_TESTS=1 pytest -m live   # 개발 서버 연동, SSH 터널 필
 - 저장소에는 비밀값 없는 예시 파일(예: `.env.example`, `config/example.yaml`)만 커밋합니다. 실제 `.env`는 `.gitignore`에 포함합니다.
 - 로그와 오류 메시지는 출력 전에 비밀값을 마스킹합니다.
 
-## 3. 디렉터리 구조 (제안)
+## 3. 디렉터리 구조
+
+현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `src/infra_agent/{config,schemas,security}`, `cli.py`, `timeutil.py`, `tests/unit`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다.
 
 ```text
 infra_agent/
@@ -127,8 +136,8 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | # | 작업 | 주요 산출물 | 완료 조건 | 선행 | 상태 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | 개발 기반 문서 | CLAUDE.md, architecture.md, development.md | PR 병합 | – | 완료 (#1, PR #2) |
-| 1 | 환경·연동 설계 반영 | environment.md, architecture.md 갱신 | PR 병합 | 0 | 진행 중 (#3) |
-| 2 | 프로젝트 골격 | `pyproject.toml`, 설정 로딩(프로필), 공통 스키마, 비밀값 마스킹, pytest·ruff·mypy, GitHub Actions CI | CI에서 `not live` 테스트·린트 통과 | 1 | 계획 |
+| 1 | 환경·연동 설계 반영 | environment.md, architecture.md 갱신 | PR 병합 | 0 | 완료 (#3, PR #4) |
+| 2 | 프로젝트 골격 | `pyproject.toml`, 설정 로딩(프로필), 공통 스키마, 비밀값 마스킹, pytest·ruff·mypy, GitHub Actions CI | CI에서 `not live` 테스트·린트 통과 | 1 | 진행 중 (#5) |
 | 3 | Prometheus 조회와 탐색 | Prometheus 클라이언트, 가용성 점검, `discover` 명령, 카탈로그 로더 | 가상 응답 테스트 통과, 개발 서버 탐색 보고서 생성(live) | 2 | 계획 |
 | 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 계획 |
 | 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 계획 |

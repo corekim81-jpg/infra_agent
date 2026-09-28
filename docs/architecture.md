@@ -1,6 +1,6 @@
 # 아키텍처 설계
 
-> **상태: 설계 초안.** 이 문서의 구성 요소, 인터페이스, 스키마는 아직 구현되지 않았습니다.
+> **상태: 설계 초안.** 공통 스키마(5절)와 설정 모델만 구현되었고(#5), 나머지 구성 요소는 아직 구현되지 않았습니다.
 > 구현이 진행되면 각 절에 구현 상태를 표시하고, 설계와 달라진 부분을 이 문서에 반영합니다.
 > 기능 범위의 기준은 [README.md](../README.md)입니다.
 
@@ -136,66 +136,57 @@ sequenceDiagram
 
 필요한 지표가 없으면 해당 분석을 "확인 불가"로 표시하고 필요한 수집 설정(예: exporter, 애플리케이션 계측)을 제안합니다. **데이터가 없다는 사실을 정상으로 해석하지 않습니다.**
 
-## 5. 공통 입출력 형식 (초안)
+## 5. 공통 입출력 형식
 
-아래는 스키마 초안입니다. 구현 시 Pydantic 모델 등으로 정의하고 이 절을 갱신합니다.
+> **구현됨 (#5):** `src/infra_agent/schemas/models.py`가 기준입니다. 아래는 요약이며, 필드가 다르면 코드가 우선합니다.
+> 모든 모델은 불변(frozen)이고 정의되지 않은 필드를 거부합니다. 모든 시각은 UTC timezone-aware datetime입니다.
 
 ```text
-AnalysisContext            # 요청 단위로 Coordinator가 생성, 모든 에이전트가 공유(읽기 전용)
-  request_id: str
-  question: str
+TimeRange                  # start < end, UTC. last(duration, now), previous()(같은 길이의 직전 구간)
+TargetRef                  # kind: host|node|namespace|workload|pod|container|service|database, name, labels
+
+AnalysisContext            # 요청 단위로 Coordinator가 생성, 모든 에이전트가 읽기 전용으로 공유
+  request_id, question
   intent: status | compare | anomaly | impact | root_cause
-  time_range: {start: datetime(UTC), end: datetime(UTC), step: duration}
-  baseline_range: {start, end} | null
-  targets: [TargetRef]        # 공통 대상 식별자
+  time_range: TimeRange, step_seconds
+  baseline_range: TimeRange | null      # intent=compare이면 필수
+  targets: [TargetRef]
   budget: {max_llm_calls, max_tool_calls, deadline}
 
-TargetRef
-  kind: host | node | namespace | workload | pod | service | database
-  name: str
-  labels: {str: str}          # 실제 조회에 사용한 라벨 매칭 기준
-
 AgentTask
-  task_id: str
-  agent: server | network | db | service | kubernetes
-  objective: str              # 이 에이전트가 답할 구체적 질문
-  depends_on: [task_id]
-  inputs: {…}                 # 선행 작업에서 받은 대상·시간 등
+  task_id, agent: server|network|db|service|kubernetes|coordinator, objective
+  depends_on: [task_id]                 # 자기 자신 의존 금지
+  inputs: {…}
 
-ToolResult                    # 모든 조회 결과. 근거(Evidence)의 원천
-  evidence_id: str
-  source: prometheus | loki | tempo | kubernetes | hubble
-  query: str                  # 실행한 조회식(비밀값 제외)
-  time_range: {start, end}
-  status: ok | empty | error | timeout | truncated
-  data: …                     # 정규화된 결과(크기 제한)
-  freshness_seconds: float | null
-  fetched_at: datetime
+ToolResult                 # 모든 조회 결과. 근거(evidence)의 원천
+  evidence_id, source: prometheus|loki|tempo|kubernetes|hubble
+  query                    # 실행한 조회식(비밀값 제외)
+  time_range, status: ok|empty|error|timeout|truncated
+  data, freshness_seconds, fetched_at, error
+  synthetic: bool          # 테스트용 가상 데이터 여부
 
 Finding
-  kind: fact | hypothesis     # 확인된 사실 / 원인 후보
-  statement: str
-  severity: info | warning | critical
-  targets: [TargetRef]
-  evidence_ids: [str]         # 반드시 실제 ToolResult를 가리킴
+  kind: fact | hypothesis
+  statement, severity: info|warning|critical, targets
+  evidence_ids: [str]      # 1개 이상 필수
   basis: threshold | baseline | state | correlation
-  confidence: low | medium | high   # hypothesis에만 의미
+  confidence: low|medium|high   # hypothesis에 필수, fact에는 금지
+  # 규칙: basis=correlation은 fact가 될 수 없음
 
 AgentResult
-  task_id, agent
-  status: success | partial | failed | skipped
-  findings: [Finding]
-  limitations: [str]          # 데이터 부족, 수집 지연, 조회 실패 등
-  next_checks: [str]
-  errors: [{code, message}]   # 비밀값 제거된 메시지
-  usage: {llm_calls, tool_calls, elapsed_ms}
+  task_id, agent, status: success|partial|failed|skipped
+  findings, evidence: [ToolResult]   # findings의 evidence_ids는 evidence에 존재해야 함
+  limitations, next_checks, errors: [{code, message}], usage: {llm_calls, tool_calls, elapsed_ms}
+  # 규칙: failed에는 findings 금지, failed/partial에는 errors 또는 limitations 필수
 
 FinalAnswer
-  summary: str
-  current_state, anomalies, impact, facts, hypotheses
+  request_id, summary, time_range
+  facts: [Finding(fact)], hypotheses: [Finding(hypothesis)]
   evidence: [{source, query, time_range, key_values}]
   limitations, unverified_areas, next_checks
 ```
+
+"현재 상태·이상 징후·영향 범위"는 별도 필드가 아니라 `summary`와 Finding(`severity`, `targets`)으로 표현합니다. 답변 형식이 확정되는 12단계에서 필요하면 필드를 추가합니다.
 
 ## 6. 분석·판단 원칙
 

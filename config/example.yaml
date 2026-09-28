@@ -1,0 +1,45 @@
+# infra_agent 설정 예시 — 비밀값·내부 서버 주소를 넣지 마세요.
+# 실제 설정은 이 파일을 config/local.yaml로 복사해 수정합니다 (config/local.yaml은 Git에서 제외).
+# 우선순위: 기본값 < 이 파일 < 환경 변수 (INFRA_AGENT__SECTION__KEY)
+profile: dev-tunnel
+
+datasources:
+  # 아래 주소는 Windows 호스트에서 SSH 터널을 실행한 동안에만 유효합니다 (docs/environment.md 1.1절).
+  prometheus:
+    enabled: true
+    url: http://127.0.0.1:19090
+    timeout_seconds: 15
+    token_env: null          # 인증이 필요하면 토큰을 담은 "환경 변수 이름"을 지정
+  loki:
+    enabled: true
+    url: http://127.0.0.1:13100
+    timeout_seconds: 20
+  tempo:
+    enabled: true
+    url: http://127.0.0.1:13200
+    timeout_seconds: 20
+  kubernetes:
+    enabled: false           # 전용 읽기 계정 kubeconfig 준비 후 true. 관리자 kubeconfig 사용 금지
+    kubeconfig_env: INFRA_AGENT_KUBECONFIG
+    context: null
+  hubble:
+    enabled: false           # 초기에는 Prometheus의 hubble_* 지표 사용
+
+catalog:
+  path: null                 # 조회 카탈로그는 4단계에서 추가 예정 (config/catalog/otel-demo.yaml)
+
+llm:
+  provider: fake             # fake | claude_agent_sdk (모델 연동은 6단계 예정)
+  model: null
+  data_policy: none          # none | aggregated | full — 결정 전 기본값 none
+  max_calls_per_request: 8
+  max_turns_per_agent: 6
+  max_budget_usd_per_request: null
+
+execution:
+  max_concurrency: 4
+  request_timeout_seconds: 120
+  agent_timeout_seconds: 60
+  tool_timeout_seconds: 20
+  max_retries: 2
+  default_time_range: 30m
