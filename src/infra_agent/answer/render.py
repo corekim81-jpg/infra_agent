@@ -33,7 +33,10 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
     lines.append("")
     lines.append("[질문 해석]")
     lines.append(f"- 의도: {_INTENT[ctx.intent]}")
-    lines.append(f"- 분석 구간: {_range(ctx.time_range)}")
+    if ctx.intent is Intent.STATUS:
+        lines.append(f"- 조회 시각: {_t(ctx.time_range.end)} (현재 값 기준)")
+    else:
+        lines.append(f"- 분석 구간: {_range(ctx.time_range)}")
     if ctx.baseline_range is not None:
         lines.append(f"- 기준 구간: {_range(ctx.baseline_range)}")
     targets = ", ".join(f"{t.kind.value}={t.name}" for t in ctx.targets) or "전체"

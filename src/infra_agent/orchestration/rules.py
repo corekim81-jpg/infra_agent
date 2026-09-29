@@ -172,9 +172,9 @@ def interpret(
     duration = range_override or _duration(text)
     if duration is None:
         duration = default_range
-        assumptions.append(
-            f"시간 범위가 없어 최근 {int(duration.total_seconds() // 60)}분으로 해석"
-        )
+        if intent is not Intent.STATUS:  # 상태 조회는 현재 값만 쓰므로 구간 가정을 표시하지 않음
+            minutes = int(duration.total_seconds() // 60)
+            assumptions.append(f"시간 범위가 없어 최근 {minutes}분으로 해석")
     if duration > MAX_RANGE:
         duration = MAX_RANGE
         assumptions.append("데이터 보존 기간(7일)을 넘는 범위는 최근 7일로 줄여 해석")

@@ -224,3 +224,41 @@ async def test_answer_question_end_to_end() -> None:
     assert "답할 수 없습니다" in other.answer.summary
     assert len(other.answer.unverified_areas) == 3
     assert "- 실행한 조회 없음" in render_text(other)
+
+
+async def test_anomaly_summary_answers_increase_first() -> None:
+    settings = load_settings(
+        environ={
+            "INFRA_AGENT_PROFILE": "dev-tunnel",
+            "INFRA_AGENT__DATASOURCES__PROMETHEUS__ENABLED": "true",
+            "INFRA_AGENT__DATASOURCES__PROMETHEUS__URL": "http://prom.synthetic.test",
+        }
+    )
+    question = "최근 30분 동안 CPU나 메모리가 비정상적으로 증가한 서버가 있어?"
+    ctx = _ctx(Intent.ANOMALY)
+    assert ctx.baseline_range is not None
+    fake = ExprProm()
+    _status_prom(ctx, fake)  # 현재 값 기준 심각 1·경고 1
+    win = _expr("node.cpu_usage", QueryMode.WINDOW_AVG, ctx)
+    fake.add(win, _nodes(0.5, 0.5, 0.5), at=ctx.time_range.end)
+    fake.add(win, _nodes(0.5, 0.5, 0.5), at=ctx.baseline_range.end)
+    bundle = await answer_question(question, settings, CATALOG, now=NOW, transport=fake.transport())
+    summary = bundle.answer.summary
+    assert summary.startswith("직전 같은 길이 구간 대비 기준 이상 증가한 대상은 없습니다.")
+    assert "별도로 현재 값이 기준을 넘는 항목 2건(심각 1건, 경고 1건)" in summary
+    assert bundle.answer.facts[0].basis is JudgementBasis.BASELINE  # 증가 판정이 먼저
+
+    fake.add(win, _nodes(1.0, 0.5, 0.5), at=ctx.time_range.end)
+    bundle2 = await answer_question(
+        question, settings, CATALOG, now=NOW, transport=fake.transport()
+    )
+    assert bundle2.answer.summary.startswith("직전 같은 길이 구간 대비 기준 이상 증가한 대상 1건")
+    text = render_text(bundle2)
+    assert "- 분석 구간:" in text and "- 기준 구간:" in text
+
+    status = await answer_question(
+        "현재 서버 상태가 어때?", settings, CATALOG, now=NOW, transport=fake.transport()
+    )
+    status_text = render_text(status)
+    assert "- 조회 시각:" in status_text and "현재 값 기준" in status_text
+    assert "- 분석 구간:" not in status_text

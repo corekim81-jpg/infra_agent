@@ -15,7 +15,9 @@ def test_status_question_defaults() -> None:
     assert r.time_range.duration == D30 and r.time_range.end == NOW
     assert r.baseline_range is None
     assert r.domains == {"server"} and not r.unsupported_domains
-    assert any("30분" in a for a in r.assumptions)
+    assert not r.assumptions  # 상태 조회는 현재 값 기준이라 구간 가정을 표시하지 않음
+    r2 = interpret("증가한 서버 있어?", NOW, D30)
+    assert any("30분" in a for a in r2.assumptions)
 
 
 def test_anomaly_question_with_duration() -> None:
