@@ -43,7 +43,7 @@ def test_no_assumed_or_excluded_metric_families(catalog: Catalog) -> None:
 def test_evidence_and_targets(catalog: Catalog) -> None:
     for key, item in catalog.items.items():
         assert item.source is DataSourceKind.PROMETHEUS, key
-        assert item.evidence.status is EvidenceStatus.DISCOVERED, key
+        assert item.evidence.status in (EvidenceStatus.DISCOVERED, EvidenceStatus.VERIFIED), key
         assert item.evidence.checked_at is not None, key
         assert item.target_labels, key
         assert item.unit, key
@@ -83,3 +83,10 @@ def test_selector_for_reports_unsupported_targets(catalog: Catalog) -> None:
     )
     assert selector == 'service="checkout"'
     assert unsupported == [TargetKind.NODE]
+
+
+def test_verified_items_have_no_open_unit_caveat(catalog: Catalog) -> None:
+    verified = {k for k, i in catalog.items.items() if i.evidence.status is EvidenceStatus.VERIFIED}
+    assert verified == {"node.cpu_usage", "container.cpu_usage"}
+    for key in verified:
+        assert not any("검증 필요" in c for c in catalog.items[key].caveats), key

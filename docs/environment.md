@@ -114,7 +114,7 @@
 - **DNS 오류율:** Hubble DNS 지표에 응답 코드(rcode) 라벨이 없어 판단할 수 없습니다.
 - **서비스 지표 라벨 차이:** spanmetrics는 `service`, service graph는 `client`/`server`, 나머지는 `service_name`을 씁니다. 카탈로그의 `target_labels`가 이 차이를 흡수합니다.
 - **값 의미 미검증:** `k8s_pod_phase`(1~5 값), `k8s_node_condition_*`(1/0/-1), spanmetrics `status_code`·`span_kind` 값, 커넥션 상태 라벨 값은 가정이며 카탈로그 caveats에 적었습니다.
-- **단위 미검증:** `k8s_node_cpu_usage`, `k8s_pod_cpu_usage`, `container_cpu_usage`(cores 가정 → live 테스트로 교차 검증), spanmetrics 지연(seconds 가정).
+- **단위:** `k8s_node_cpu_usage`, `container_cpu_usage`는 cores로 교차 검증됨(2026-09-29 live 테스트). `k8s_pod_cpu_usage`(cores 가정)와 spanmetrics 지연(seconds 가정)은 미검증.
 
 ### 3.4 Loki, Tempo
 
@@ -205,7 +205,7 @@ $env:INFRA_AGENT_LIVE_TESTS = "1"; python -m pytest -m live
 
 ### 4.4 otel-demo 카탈로그와 점검
 
-> **구현됨 (#9):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 53개(Server 13, Kubernetes 11, Network 8, DB·캐시 14, Service 7). 모두 `evidence.status: discovered`이며 `verified` 항목은 아직 없습니다.
+> **구현됨 (#9):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 53개(Server 13, Kubernetes 11, Network 8, DB·캐시 14, Service 7). `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지 51개는 `discovered`입니다.
 
 - 항목마다 `target_labels`(대상 종류 → 라벨 이름)를 두어, 에이전트가 대상(네임스페이스·Pod·서비스 등)을 selector로 바꿀 때 사용합니다. 항목이 지원하지 않는 대상은 `selector_for()`가 따로 반환하므로 답변의 한계로 표시해야 합니다.
 - 점검 명령:
@@ -220,6 +220,7 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 - **개발 서버 실행 점검(2026-09-29):** 정상 43, 결과 없음 10, 지표 없음 0, 오류 0.
   - 결과 없음 10건은 모두 "문제가 있을 때만 결과가 나오는" 조건형 조회입니다(`k8s.container_restarts_increase`, `k8s.container_oom_events`, `k8s.pod_phase`, `k8s.node_not_ready`, `k8s.node_pressure`, `k8s.deployment_unavailable`, `k8s.statefulset_unready`, `k8s.daemonset_unready`, `k8s.job_failed_pods`, `k8s.hpa_at_max`).
   - `network.tcp_flags_rate`가 워크로드 단위 집계에서 시계열 1.4만 개를 반환해 네임스페이스 단위로 줄였습니다.
+  - live 테스트 7건 통과: 카탈로그 전체 조회 실행, `k8s_node_cpu_usage`·`container_cpu_usage`의 cores 단위 교차 검증(CPU 시간 증가율 대비 비율 0.5~2.0).
 - **조건형 조회 해석 규칙(에이전트 구현 시 적용):** 결과가 비어 있으면 "조건에 해당하는 대상 없음"으로 판단할 수 있는 것은 필요한 지표가 존재하고 최신 데이터가 있을 때뿐입니다. 이를 확인하지 못했으면 "확인 불가"로 답합니다.
 - `verified`로 올리는 기준: `--execute` 결과 확인 + caveats에 적은 단위·값 의미를 실제 값으로 검토.
 

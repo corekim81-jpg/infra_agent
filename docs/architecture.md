@@ -306,7 +306,7 @@ SDK는 코딩 에이전트용 내장 도구(파일 읽기·쓰기, 셸 실행 �
 | 최종 모델 제공자·모델 | 1차 어댑터는 Claude Agent SDK, 최종 미정 | 모델 계층 | 운영 적용 전 |
 | 운영 데이터의 외부 모델 전송 허용 범위 | 미정 (기본 `data_policy: none`). Tempo span에 SQL 원문(`db.statement` 등)이 있음 | 에이전트 해석 방식, 보안 | 실제 조회 데이터를 모델에 전달하기 전 |
 | 라벨 값 의미 (`k8s_pod_phase`, 노드 조건, spanmetrics `status_code`·`span_kind`, 커넥션 상태) | 가정 (카탈로그 caveats) | 판정 정확도 | 각 에이전트 구현 시 값 검토 |
-| 이름에 단위가 없는 CPU 지표, spanmetrics 지연 단위 | 가정 (cores, seconds). CPU는 live 테스트로 교차 검증 | 수치 해석 | 4단계 사용자 환경 검증 |
+| `k8s_pod_cpu_usage`, spanmetrics 지연 단위 | 가정 (cores, seconds). 노드·컨테이너 CPU는 cores로 검증됨 | 수치 해석 | 해당 에이전트 구현 시 |
 | Kubernetes 이벤트 저장 위치 (Loki 여부) | 미확인 | Kubernetes Agent | 8단계 |
 | Kubernetes 전용 읽기 계정 | 준비 전 | Kubernetes API 연동 | 8b단계 |
 | 물리 서버 성능 수집 | 없음 (`system_*`는 Pod 단위) | Server Agent 확장 | 확장 단계 |

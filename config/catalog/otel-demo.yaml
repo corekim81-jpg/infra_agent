@@ -20,10 +20,10 @@ items:
     query: 'sum by (k8s_node_name) (k8s_node_cpu_usage{{{selector}}})'
     requires_metrics: [k8s_node_cpu_usage]
     target_labels: &node_targets {node: k8s_node_name}
-    evidence: {status: discovered, checked_at: 2026-09-29}
+    evidence: {status: verified, checked_at: 2026-09-29}
     caveats:
       - k3d 노드(컨테이너) 기준 값이며 물리 서버 전체 자원이 아님
-      - 단위(cores)는 지표 이름에 없음. rate(k8s_node_cpu_time_seconds_total)와 교차 검증 필요(live 테스트)
+      - "단위 cores: 개발 서버에서 sum(rate(k8s_node_cpu_time_seconds_total[5m]))와 교차 검증 통과(2026-09-29, live 테스트)"
   node.cpu_utilization:
     agent: server
     source: prometheus
@@ -121,8 +121,8 @@ items:
       container: k8s_container_name
       workload: k8s_deployment_name
       service: service_name
-    evidence: {status: discovered, checked_at: 2026-09-29}
-    caveats: [단위(cores)는 지표 이름에 없음. rate(container_cpu_time_seconds_total)와 교차 검증 필요]
+    evidence: {status: verified, checked_at: 2026-09-29}
+    caveats: ["단위 cores: 개발 서버에서 sum(rate(container_cpu_time_seconds_total[5m]))와 교차 검증 통과(2026-09-29, live 테스트)"]
   container.memory_working_set:
     agent: server
     source: prometheus
