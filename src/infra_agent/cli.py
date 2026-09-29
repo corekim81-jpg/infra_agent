@@ -1,21 +1,40 @@
 """명령행 인터페이스.
 
-현재는 설정 확인(`config`)만 제공합니다. 질문 응답 명령은 이후 단계에서 추가합니다.
+- `config`: 적용될 설정을 검증하고 출력합니다.
+- `check`: 활성화된 데이터 소스(Prometheus, Loki, Tempo)의 연결 상태를 점검합니다.
+- `discover`: 지표·라벨·최신성을 탐색해 `var/discovery/`에 보고서를 저장합니다.
+
+질문 응답 명령은 이후 단계에서 추가합니다.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from infra_agent import __version__
-from infra_agent.config import ConfigError, load_settings
-from infra_agent.security import redact
+from infra_agent.config import ConfigError, Settings, load_settings
+from infra_agent.datasources.probe import SourceStatus, check_sources
+from infra_agent.discovery import DiscoveryOptions, discover, write_report
+from infra_agent.security import configure_logging, redact
+from infra_agent.timeutil import parse_duration
 
 EXIT_OK = 0
+EXIT_UNAVAILABLE = 1
 EXIT_CONFIG_ERROR = 2
+
+
+def _add_config_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        default=None,
+        help="설정 파일 경로 (기본: 환경 변수 INFRA_AGENT_CONFIG)",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -27,20 +46,44 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     config_cmd = sub.add_parser("config", help="적용될 설정을 검증하고 출력합니다")
-    config_cmd.add_argument(
-        "--config",
-        dest="config_path",
-        default=None,
-        help="설정 파일 경로 (기본: 환경 변수 INFRA_AGENT_CONFIG)",
+    _add_config_arg(config_cmd)
+
+    check_cmd = sub.add_parser("check", help="데이터 소스 연결 상태를 점검합니다")
+    _add_config_arg(check_cmd)
+    check_cmd.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    disc = sub.add_parser("discover", help="지표·라벨·최신성을 탐색해 보고서를 저장합니다")
+    _add_config_arg(disc)
+    disc.add_argument(
+        "--output-dir", default="var/discovery", help="보고서 저장 위치 (기본: var/discovery)"
     )
+    disc.add_argument("--lookback", default="1h", help="라벨 조회 구간 (기본: 1h)")
+    disc.add_argument(
+        "--max-metrics", type=int, default=400, help="상세 탐색할 최대 지표 수 (기본: 400)"
+    )
+    disc.add_argument(
+        "--include-prefix",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="추가로 상세 탐색할 지표 이름 첫 토큰 (예: app). 여러 번 지정 가능",
+    )
+    disc.add_argument("--show-ips", action="store_true", help="라벨 값의 IP 주소를 마스킹하지 않음")
+    disc.add_argument("--no-values", action="store_true", help="라벨 값 표본을 보고서에서 제외")
     return parser
 
 
-def _cmd_config(config_path: str | None) -> int:
+def _load(config_path: str | None) -> Settings | None:
     try:
-        settings = load_settings(config_path)
+        return load_settings(config_path)
     except ConfigError as exc:
         print(redact(str(exc)), file=sys.stderr)
+        return None
+
+
+def _cmd_config(config_path: str | None) -> int:
+    settings = _load(config_path)
+    if settings is None:
         return EXIT_CONFIG_ERROR
     # 설정에는 비밀값이 없지만, 출력 전 마스킹을 한 번 더 적용합니다.
     text = json.dumps(settings.model_dump(mode="json"), ensure_ascii=False, indent=2)
@@ -48,10 +91,80 @@ def _cmd_config(config_path: str | None) -> int:
     return EXIT_OK
 
 
+def _status_line(st: SourceStatus) -> str:
+    if not st.enabled:
+        return f"- {st.name}: 비활성 (설정에서 enabled=false)"
+    if st.reachable:
+        state = "정상" if st.ready else "응답했지만 준비되지 않음"
+        return (
+            f"- {st.name}: {state} ({st.url}, 버전 {st.version or '확인 불가'}, {st.latency_ms}ms)"
+        )
+    line = f"- {st.name}: 연결 실패 ({st.url}) [{st.error_code}] {st.error}"
+    if st.hint:
+        line += f"\n    힌트: {st.hint}"
+    return line
+
+
+def _cmd_check(config_path: str | None, as_json: bool) -> int:
+    settings = _load(config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    statuses = asyncio.run(check_sources(settings))
+    if as_json:
+        print(
+            json.dumps([s.model_dump(mode="json") for s in statuses], ensure_ascii=False, indent=2)
+        )
+    else:
+        print(f"프로필: {settings.profile.value}")
+        for st in statuses:
+            print(redact(_status_line(st)))
+    enabled = [s for s in statuses if s.enabled]
+    if not enabled:
+        print("활성화된 데이터 소스가 없습니다.", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    return EXIT_OK if all(s.reachable and s.ready for s in enabled) else EXIT_UNAVAILABLE
+
+
+def _cmd_discover(args: argparse.Namespace) -> int:
+    settings = _load(args.config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    try:
+        lookback = parse_duration(args.lookback)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    if args.max_metrics < 1:
+        print("--max-metrics는 1 이상이어야 합니다", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    options = DiscoveryOptions(
+        lookback=lookback,
+        max_metrics=args.max_metrics,
+        mask_ips=not args.show_ips,
+        include_values=not args.no_values,
+        extra_prefixes=frozenset(args.include_prefix),
+    )
+    print("탐색 중입니다. 지표 수에 따라 수 분이 걸릴 수 있습니다...", file=sys.stderr)
+    report = asyncio.run(discover(settings, options))
+    json_path, md_path = write_report(report, Path(args.output_dir))
+    print(f"보고서 저장: {md_path}")
+    print(f"원본 데이터: {json_path}")
+    print("주의: 실제 환경 데이터가 포함되어 있으므로 저장소에 커밋하지 마세요.")
+    for warning in report.warnings:
+        print(f"경고: {redact(warning)}", file=sys.stderr)
+    prom = report.prometheus
+    return EXIT_OK if prom is not None and prom.status.reachable else EXIT_UNAVAILABLE
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    configure_logging("WARNING")
     if args.command == "config":
         return _cmd_config(args.config_path)
+    if args.command == "check":
+        return _cmd_check(args.config_path, args.json)
+    if args.command == "discover":
+        return _cmd_discover(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 
