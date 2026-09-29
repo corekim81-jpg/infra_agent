@@ -22,3 +22,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip_live)
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """GitHub Actions에서 실패한 테스트를 `::error` 주석으로 남깁니다.
+
+    CI 로그를 내려받지 못하는 환경에서도 체크 주석(annotations)으로 실패 원인을 볼 수 있게 합니다.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    for report in terminalreporter.stats.get("failed", []):
+        text = str(getattr(report, "longreprtext", "") or report.longrepr)
+        tail = " | ".join(line.strip() for line in text.splitlines()[-12:] if line.strip())
+        tail = tail.replace("%", "%25").replace("\r", "").replace("\n", " ")[:1500]
+        terminalreporter.write_line(f"::error title={report.nodeid}::{tail}")
