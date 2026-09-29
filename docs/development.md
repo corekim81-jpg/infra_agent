@@ -140,7 +140,7 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 2 | 프로젝트 골격 | `pyproject.toml`, 설정 로딩(프로필), 공통 스키마, 비밀값 마스킹, pytest·ruff·mypy, GitHub Actions CI | CI에서 `not live` 테스트·린트 통과 | 1 | 완료 (#5, PR #6) |
 | 3 | Prometheus 조회와 탐색 | Prometheus 클라이언트, 가용성 점검, `discover` 명령, 카탈로그 로더 | 가상 응답 테스트 통과, 개발 서버 탐색 보고서 생성(live) | 2 | 완료 (#7, PR #8; 개발 서버 탐색·live 4건 통과 2026-09-29) |
 | 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 완료 (#9, PR #10; 실행 점검 오류 0, live 7건 통과) |
-| 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 진행 중 (#11) |
+| 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 진행 중 (#11; 개발 서버 `ask` 실행·live 9건 통과 2026-09-29) |
 | 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 계획 |
 | 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 계획 |
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 계획 |

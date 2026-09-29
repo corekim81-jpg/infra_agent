@@ -16,6 +16,8 @@ from infra_agent.schemas import (
     FinalAnswer,
     Finding,
     FindingKind,
+    Intent,
+    JudgementBasis,
     Severity,
     ToolStatus,
 )
@@ -31,6 +33,20 @@ DOMAIN_NAMES = {
 _SEVERITY_ORDER = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}
 
 
+def _severity_counts(findings: Sequence[Finding]) -> str:
+    """경고·심각 건수 문구. 없으면 빈 문자열."""
+    critical = sum(1 for f in findings if f.severity is Severity.CRITICAL)
+    warning = sum(1 for f in findings if f.severity is Severity.WARNING)
+    if not critical and not warning:
+        return ""
+    parts = []
+    if critical:
+        parts.append(f"심각 {critical}건")
+    if warning:
+        parts.append(f"경고 {warning}건")
+    return f"{critical + warning}건({', '.join(parts)})"
+
+
 def _summary(
     facts: Sequence[Finding], results: Sequence[AgentResult], interp: Interpretation
 ) -> str:
@@ -38,20 +54,31 @@ def _summary(
         return "조회에 실패해 상태를 판단하지 못했습니다. 한계와 오류 내용을 확인하세요."
     if not results:
         return "요청한 분야를 분석할 수 있는 에이전트가 아직 없어 답할 수 없습니다."
-    critical = sum(1 for f in facts if f.severity is Severity.CRITICAL)
-    warning = sum(1 for f in facts if f.severity is Severity.WARNING)
     partial = any(r.status is not AgentStatus.SUCCESS for r in results)
-    if critical or warning:
-        parts = []
-        if critical:
-            parts.append(f"심각 {critical}건")
-        if warning:
-            parts.append(f"경고 {warning}건")
-        text = f"기준을 넘는 이상 징후 {critical + warning}건({', '.join(parts)})을 확인했습니다."
-    elif any(f.severity is Severity.INFO for f in facts):
-        text = "확인한 항목에서는 기준을 넘는 이상 징후가 없습니다."
+    if interp.intent in (Intent.COMPARE, Intent.ANOMALY):
+        # 비교·증가 질문에는 증가 판정 결과를 먼저 답합니다.
+        changes = [f for f in facts if f.basis is JudgementBasis.BASELINE]
+        increased = [f for f in changes if f.severity is not Severity.INFO]
+        if increased:
+            text = (
+                f"직전 같은 길이 구간 대비 기준 이상 증가한 대상 {len(increased)}건을 확인했습니다."
+            )
+        elif changes:
+            text = "직전 같은 길이 구간 대비 기준 이상 증가한 대상은 없습니다."
+        else:
+            text = "직전 구간과 비교할 수 있는 결과가 없어 증가 여부를 판단하지 못했습니다."
+        others = [f for f in facts if f.basis is not JudgementBasis.BASELINE]
+        counts = _severity_counts(others)
+        if counts:
+            text += f" 별도로 현재 값이 기준을 넘는 항목 {counts}이 있습니다."
     else:
-        text = "판단에 사용할 수 있는 결과가 없어 이상 여부를 판단하지 못했습니다."
+        counts = _severity_counts(facts)
+        if counts:
+            text = f"기준을 넘는 이상 징후 {counts}을 확인했습니다."
+        elif any(f.severity is Severity.INFO for f in facts):
+            text = "확인한 항목에서는 기준을 넘는 이상 징후가 없습니다."
+        else:
+            text = "판단에 사용할 수 있는 결과가 없어 이상 여부를 판단하지 못했습니다."
     if partial:
         text += " 일부 조회를 완료하지 못해 결과가 불완전합니다."
     if interp.unsupported_domains:
@@ -63,9 +90,13 @@ def _summary(
 def synthesize(
     request_id: str, interp: Interpretation, results: Sequence[AgentResult]
 ) -> FinalAnswer:
+    change_first = interp.intent in (Intent.COMPARE, Intent.ANOMALY)
     facts = sorted(
         (f for r in results for f in r.findings if f.kind is FindingKind.FACT),
-        key=lambda f: _SEVERITY_ORDER[f.severity],
+        key=lambda f: (
+            0 if change_first and f.basis is JudgementBasis.BASELINE else 1,
+            _SEVERITY_ORDER[f.severity],
+        ),
     )
     hypotheses = [f for r in results for f in r.findings if f.kind is FindingKind.HYPOTHESIS]
     evidence = []
