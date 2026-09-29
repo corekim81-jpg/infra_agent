@@ -3,6 +3,7 @@
 - `config`: 적용될 설정을 검증하고 출력합니다.
 - `check`: 활성화된 데이터 소스(Prometheus, Loki, Tempo)의 연결 상태를 점검합니다.
 - `discover`: 지표·라벨·최신성을 탐색해 `var/discovery/`에 보고서를 저장합니다.
+- `catalog`: 조회 카탈로그 파일을 검증하고, `--execute` 시 각 조회를 Prometheus에 실행해 점검합니다.
 
 질문 응답 명령은 이후 단계에서 추가합니다.
 """
@@ -17,8 +18,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from infra_agent import __version__
+from infra_agent.catalog import CatalogError, load_catalog
+from infra_agent.catalog.check import CheckStatus, ItemCheck, check_catalog
 from infra_agent.config import ConfigError, Settings, load_settings
+from infra_agent.datasources.errors import DataSourceError
 from infra_agent.datasources.probe import SourceStatus, check_sources
+from infra_agent.datasources.prometheus import PrometheusClient
 from infra_agent.discovery import DiscoveryOptions, discover, write_report
 from infra_agent.security import configure_logging, redact
 from infra_agent.timeutil import parse_duration
@@ -70,6 +75,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     disc.add_argument("--show-ips", action="store_true", help="라벨 값의 IP 주소를 마스킹하지 않음")
     disc.add_argument("--no-values", action="store_true", help="라벨 값 표본을 보고서에서 제외")
+
+    cat = sub.add_parser("catalog", help="조회 카탈로그를 검증하고 (선택) 실행 점검합니다")
+    _add_config_arg(cat)
+    cat.add_argument("--catalog", dest="catalog_path", default=None, help="카탈로그 파일 경로")
+    cat.add_argument(
+        "--execute", action="store_true", help="각 조회를 Prometheus에 실행해 오류·빈 결과 확인"
+    )
+    cat.add_argument("--range", dest="range_", default="5m", help="범위 구간 값 (기본: 5m)")
     return parser
 
 
@@ -156,6 +169,72 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     return EXIT_OK if prom is not None and prom.status.reachable else EXIT_UNAVAILABLE
 
 
+_STATUS_LABEL = {
+    CheckStatus.OK: "정상",
+    CheckStatus.EMPTY: "결과 없음",
+    CheckStatus.MISSING_METRICS: "지표 없음",
+    CheckStatus.ERROR: "오류",
+    CheckStatus.SKIPPED: "건너뜀",
+}
+
+
+def _cmd_catalog(args: argparse.Namespace) -> int:
+    settings = _load(args.config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    path = args.catalog_path or settings.catalog.path
+    if not path:
+        print(
+            "카탈로그 경로가 없습니다. --catalog 또는 설정 catalog.path를 지정하세요.",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG_ERROR
+    try:
+        catalog = load_catalog(path)
+        parse_duration(args.range_)
+    except (CatalogError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+
+    by_agent: dict[str, int] = {}
+    for item in catalog.items.values():
+        by_agent[item.agent.value] = by_agent.get(item.agent.value, 0) + 1
+    print(f"카탈로그: {path} (환경 {catalog.environment}, 항목 {len(catalog.items)}개)")
+    print("에이전트별: " + ", ".join(f"{k} {v}" for k, v in sorted(by_agent.items())))
+    if not args.execute:
+        print("형식 검증 통과. 실제 조회 점검은 --execute를 사용하세요.")
+        return EXIT_OK
+    if not settings.datasources.prometheus.enabled:
+        print("Prometheus가 비활성화되어 있어 실행 점검을 할 수 없습니다.", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+
+    async def run() -> list[ItemCheck]:
+        async with PrometheusClient.from_config(
+            settings.datasources.prometheus, max_retries=settings.execution.max_retries
+        ) as prom:
+            return await check_catalog(
+                catalog, prom, range_=args.range_, concurrency=settings.execution.max_concurrency
+            )
+
+    try:
+        results = asyncio.run(run())
+    except DataSourceError as exc:
+        print(f"Prometheus 조회 실패: {exc.message}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    counts: dict[CheckStatus, int] = {}
+    for r in sorted(results, key=lambda r: (r.status is CheckStatus.OK, r.key)):
+        counts[r.status] = counts.get(r.status, 0) + 1
+        line = f"- [{_STATUS_LABEL[r.status]}] {r.key} ({r.agent})"
+        if r.status is CheckStatus.OK:
+            line += f": 시계열 {r.series}개"
+        elif r.detail:
+            line += f": {r.detail}"
+        print(redact(line))
+    print("요약: " + ", ".join(f"{_STATUS_LABEL[k]} {v}" for k, v in counts.items()))
+    failed = counts.get(CheckStatus.ERROR, 0) + counts.get(CheckStatus.MISSING_METRICS, 0)
+    return EXIT_UNAVAILABLE if failed else EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     configure_logging("WARNING")
@@ -165,6 +244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_check(args.config_path, args.json)
     if args.command == "discover":
         return _cmd_discover(args)
+    if args.command == "catalog":
+        return _cmd_catalog(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 

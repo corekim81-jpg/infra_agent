@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from infra_agent.catalog import CatalogError, EvidenceStatus, load_catalog
-from infra_agent.schemas import AgentName
+from infra_agent.schemas import AgentName, TargetKind
 
 VALID = """
 version: 1
@@ -21,6 +21,7 @@ items:
     query: 'sum by ({node_label}) (k8s_node_cpu_usage{{{selector}}})'
     requires_metrics: [k8s_node_cpu_usage]
     labels: {node_label: k8s_node_name}
+    target_labels: {node: k8s_node_name, namespace: k8s_namespace_name}
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats: [k3d 노드 값이며 물리 서버 전체 자원이 아님]
   network.drop_rate:
@@ -106,3 +107,22 @@ def test_invalid_catalog(tmp_path: Path, bad: str, message: str) -> None:
 def test_missing_catalog_file(tmp_path: Path) -> None:
     with pytest.raises(CatalogError, match="찾을 수 없습니다"):
         load_catalog(tmp_path / "none.yaml")
+
+
+def test_selector_for(tmp_path: Path) -> None:
+    item = load_catalog(_write(tmp_path, VALID)).items["node.cpu_usage"]
+    selector, unsupported = item.selector_for(
+        {TargetKind.NODE: 'k3d-"x"', TargetKind.SERVICE: "cart"}
+    )
+    assert selector == 'k8s_node_name="k3d-\\"x\\""'
+    assert unsupported == [TargetKind.SERVICE]
+    assert item.render(selector).endswith('{k8s_node_name="k3d-\\"x\\""})')
+
+
+def test_bad_target_label_rejected(tmp_path: Path) -> None:
+    bad = VALID.replace("target_labels: {node: k8s_node_name,", "target_labels: {node: 'k8s-node',")
+    with pytest.raises(CatalogError, match="target_labels"):
+        load_catalog(_write(tmp_path, bad))
+    worse = VALID.replace("target_labels: {node: k8s_node_name,", "target_labels: {rack: x,")
+    with pytest.raises(CatalogError):
+        load_catalog(_write(tmp_path, worse))

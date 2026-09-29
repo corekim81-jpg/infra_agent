@@ -1,6 +1,6 @@
 # 개발 가이드
 
-> **상태: 2·3단계 진행 중.** 패키지 구성, 설정 로딩, 공통 스키마, 비밀값 마스킹, 테스트·CI(#5)와 읽기 전용 데이터 소스 클라이언트·연결 점검·지표 탐색·카탈로그 로더(#7)가 있습니다.
+> **상태: 4단계 진행 중.** 패키지 구성, 설정 로딩, 공통 스키마, 비밀값 마스킹, 테스트·CI(#5), 읽기 전용 데이터 소스 클라이언트·연결 점검·지표 탐색·카탈로그 로더(#7), otel-demo 조회 카탈로그·점검 명령(#9)이 있습니다.
 > 에이전트·모델 연동·질문 응답은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
@@ -50,7 +50,7 @@ Linux(Python 3.11, 3.12)에서 `live`를 제외한 명령을 실행해 통과를
 
 ## 3. 디렉터리 구조
 
-현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `src/infra_agent/{config,schemas,security,datasources,discovery,catalog}`, `cli.py`, `timeutil.py`, `tests/{unit,live}`, `tests/fakes.py`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다. (`datasources/`에는 prometheus·loki·tempo와 공통 HTTP·연결 점검만 있습니다.)
+현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `config/catalog/otel-demo.yaml`, `src/infra_agent/{config,schemas,security,datasources,discovery,catalog}`, `cli.py`, `timeutil.py`, `tests/{unit,live}`, `tests/fakes.py`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다. (`datasources/`에는 prometheus·loki·tempo와 공통 HTTP·연결 점검만 있습니다.)
 
 ```text
 infra_agent/
@@ -137,9 +137,9 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | --- | --- | --- | --- | --- | --- |
 | 0 | 개발 기반 문서 | CLAUDE.md, architecture.md, development.md | PR 병합 | – | 완료 (#1, PR #2) |
 | 1 | 환경·연동 설계 반영 | environment.md, architecture.md 갱신 | PR 병합 | 0 | 완료 (#3, PR #4) |
-| 2 | 프로젝트 골격 | `pyproject.toml`, 설정 로딩(프로필), 공통 스키마, 비밀값 마스킹, pytest·ruff·mypy, GitHub Actions CI | CI에서 `not live` 테스트·린트 통과 | 1 | 진행 중 (#5) |
-| 3 | Prometheus 조회와 탐색 | Prometheus 클라이언트, 가용성 점검, `discover` 명령, 카탈로그 로더 | 가상 응답 테스트 통과, 개발 서버 탐색 보고서 생성(live) | 2 | 진행 중 (#7) |
-| 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 계획 |
+| 2 | 프로젝트 골격 | `pyproject.toml`, 설정 로딩(프로필), 공통 스키마, 비밀값 마스킹, pytest·ruff·mypy, GitHub Actions CI | CI에서 `not live` 테스트·린트 통과 | 1 | 완료 (#5, PR #6) |
+| 3 | Prometheus 조회와 탐색 | Prometheus 클라이언트, 가용성 점검, `discover` 명령, 카탈로그 로더 | 가상 응답 테스트 통과, 개발 서버 탐색 보고서 생성(live) | 2 | 완료 (#7, PR #8; 개발 서버 탐색·live 4건 통과 2026-09-29) |
+| 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 진행 중 (#9) |
 | 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 계획 |
 | 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 계획 |
 | 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 계획 |

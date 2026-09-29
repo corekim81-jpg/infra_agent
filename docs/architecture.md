@@ -57,22 +57,22 @@ flowchart TD
 1. **결정적 분석(Python 코드):** 조회, 집계, 기준 구간 비교, 임계값 판정, 상위 N 추출. 숫자 계산은 모델에 맡기지 않습니다.
 2. **해석(모델):** 결정적 분석 결과와 근거를 입력으로 받아 의미, 원인 후보, 추가 확인 사항을 정리합니다. 모델이 언급한 수치는 근거 ID로 추적 가능해야 합니다.
 
-아래 표의 "초기 데이터"는 개발 환경(OTel Demo, k3d)에서 사용자가 확인한 범위이며, 상세 지표와 검증 상태는 [environment.md](environment.md) 3절을 기준으로 합니다.
+아래 표의 "초기 데이터"는 개발 환경(OTel Demo, k3d) 탐색 결과(2026-09-29)이며, 상세 지표와 검증 상태는 [environment.md](environment.md) 3절, 조회식은 `config/catalog/otel-demo.yaml`을 기준으로 합니다.
 
 | 에이전트 | 주요 분석 | 초기 데이터 (개발 환경) | 허용 도구 예시 |
 | --- | --- | --- | --- |
 | Coordinator | 의도·대상·시간 해석, 에이전트 선택, 작업 순서, 결과 종합, 충돌·누락 표시 | 각 에이전트 결과, 가용성 점검 결과 | 가용성 점검, 대상 해석(라벨 값 조회) |
-| Server | **초기 대상은 k3d 노드·Pod·컨테이너 자원**: CPU, 메모리 working set, (가용 시) 파일시스템·네트워크 I/O | Prometheus `k8s_node_*`, `container_*` (kubeletstats, cAdvisor) | `prom_query`, `prom_query_range`, `prom_series` |
-| Network | 패킷 드롭과 사유, DNS 질의·오류, (가용 시) 서비스 간 흐름 | Prometheus `hubble_*` | `prom_*` (Hubble Relay 직접 조회는 미확인) |
-| DB | PostgreSQL 연결 수 대비 최대치, 데드락, DB 크기, 앱 커넥션 풀 사용률·대기, DB 작업 지연 분위수 | Prometheus `postgresql_*`, `db_client_*`, `db_sql_*`; Loki 앱 로그; Tempo DB span(검증 필요) | `prom_*`, `loki_query_range`, `tempo_search` |
-| Service | 요청량, 오류율, 응답 시간(분위수), 로그 오류 패턴, 느린·실패 트레이스 | Loki, Tempo; Prometheus 요청 지표는 탐색으로 확인 | `prom_*`, `loki_*`, `tempo_search`, `tempo_trace` |
-| Kubernetes | 노드 조건, Pod 상태·재시작·OOMKilled, Pending 사유, 이벤트, 요청·제한 | Prometheus `k8s_*`(k8s_cluster 수집); 이벤트(수집 위치 검증 필요); Kubernetes API는 읽기 계정 준비 후 | `prom_*`, `loki_*`, (이후) `k8s_list`, `k8s_get`, `k8s_events` |
+| Server | **초기 대상은 k3d 노드·Pod·컨테이너 자원**: CPU·메모리 사용량과 할당 가능량·limit 대비 비율, 파일시스템, 네트워크 I/O, CPU 스로틀링 | Prometheus `k8s_node_*`, `k8s_pod_*`, `container_*` (kubeletstats, cAdvisor) | `prom_query`, `prom_query_range`, `prom_series` |
+| Network | 패킷 드롭과 사유, 판정별 흐름, TCP 플래그, DNS 질의(응답 코드 없음), 인터페이스·Pod 네트워크 오류, Hubble 이벤트 유실 | Prometheus `hubble_*`, `k8s_node_network_*`, `k8s_pod_network_*`, `container_network_*` | `prom_*` (Hubble Relay 직접 조회는 미확인) |
+| DB | PostgreSQL 연결 수 대비 최대치, 데드락, 롤백·캐시 적중률, DB 크기, 앱 커넥션 풀 사용률·대기, DB 작업 지연 분위수, Valkey 연결·메모리·퇴출·적중률 | Prometheus `postgresql_*`, `db_client_*`, `db_sql_*`, `redis_*`(Valkey), spanmetrics의 DB span; Loki 앱 로그; Tempo DB span(`db.system` 등 확인됨) | `prom_*`, `loki_query_range`, `tempo_search` |
+| Service | 요청량, 오류율, 응답 시간(분위수), 서비스 간 호출·실패·지연, 로그 오류 패턴, 느린·실패 트레이스 | Prometheus `traces_spanmetrics_*`, `traces_service_graph_*`(Tempo metrics-generator), 서비스별 `http_*`·`rpc_*`; Loki; Tempo | `prom_*`, `loki_*`, `tempo_search`, `tempo_trace` |
+| Kubernetes | 노드 조건·압박, Pod phase·컨테이너 준비·재시작·OOM, 워크로드 복제 상태(Deployment·StatefulSet·DaemonSet·Job·HPA), 요청·제한, Pending 사유·이벤트 | Prometheus `k8s_*`(k8s_cluster 수집), `container_oom_events_total`; 이벤트(수집 위치 미확인); Kubernetes API는 읽기 계정 준비 후 | `prom_*`, `loki_*`, (이후) `k8s_list`, `k8s_get`, `k8s_events` |
 
 범위 제한:
 
 - `node_*`, `kube_*` 지표는 개발 환경에서 확인되지 않았으므로 가정하지 않습니다.
-- `system_*` 지표는 수집 범위가 검증되기 전까지 물리 서버 전체 값으로 해석하지 않습니다. 물리 서버 전체 성능 분석은 별도 수집 확인 후 확장합니다.
-- DB는 PostgreSQL 직접 SQL 접속 없이 관측 데이터로 분석합니다. `pg_stat_statements`, 실행 계획, 상세 잠금 그래프, Valkey 지표는 가용성이 확인되지 않았습니다.
+- `system_*` 지표는 Pod 단위 자동 계측 값으로 보이므로(탐색 결과) 물리 서버 전체 값으로 해석하지 않고 카탈로그에서 제외했습니다. 물리 서버 전체 성능 분석은 호스트 수준 수집 구성 후 확장합니다.
+- DB는 PostgreSQL 직접 SQL 접속 없이 관측 데이터로 분석합니다. `pg_stat_statements`, 실행 계획, 잠금 대기·잠금 그래프는 수집되지 않습니다.
 - Server와 Kubernetes의 경계: Server는 자원 **사용량**, Kubernetes는 리소스 **상태·이벤트·스케줄링·요청/제한**을 담당합니다.
 
 실제 사용할 지표 이름과 라벨은 코드에 고정하지 않고, 실제 지표 탐색 결과로 만든 **조회 카탈로그**를 통해 결정합니다(7절).
@@ -301,18 +301,20 @@ SDK는 코딩 에이전트용 내장 도구(파일 읽기·쓰기, 셸 실행 �
 
 ## 11. 미확정 사항
 
-| 항목 | 현재 상태 | 영향 | 결정 필요 시점 |
+| 항목 | 현재 상태 | 영향 | 결정·확인 시점 |
 | --- | --- | --- | --- |
 | 최종 모델 제공자·모델 | 1차 어댑터는 Claude Agent SDK, 최종 미정 | 모델 계층 | 운영 적용 전 |
-| 운영 데이터의 외부 모델 전송 허용 범위 | 미정 (기본 `data_policy: none`) | 에이전트 해석 방식, 보안 | 실제 조회 데이터를 모델에 전달하기 전 |
-| 확인 지표의 라벨·단위·의미 | 이름만 확인 | 조회 카탈로그 | 탐색 단계 |
-| 서비스 요청량·오류율·응답시간 지표 | 미확인 | Service Agent | 탐색 단계 |
-| Kubernetes 이벤트 저장 위치 (Loki 여부) | 미확인 | Kubernetes Agent | 탐색 단계 |
-| Tempo의 DB span 속성 | 미확인 | DB·Service Agent | 탐색 단계 |
-| Kubernetes 전용 읽기 계정 | 준비 전 | Kubernetes API 연동 | Kubernetes Agent 2단계 |
-| `system_*` 지표 수집 범위, 물리 서버 성능 수집 | 미검증 | Server Agent 확장 | 확장 단계 |
-| Valkey 지표, `pg_stat_statements`, 실행 계획, 잠금 그래프 | 미확인 | DB Agent 확장 | 확장 단계 |
+| 운영 데이터의 외부 모델 전송 허용 범위 | 미정 (기본 `data_policy: none`). Tempo span에 SQL 원문(`db.statement` 등)이 있음 | 에이전트 해석 방식, 보안 | 실제 조회 데이터를 모델에 전달하기 전 |
+| 라벨 값 의미 (`k8s_pod_phase`, 노드 조건, spanmetrics `status_code`·`span_kind`, 커넥션 상태) | 가정 (카탈로그 caveats) | 판정 정확도 | 각 에이전트 구현 시 값 검토 |
+| `k8s_pod_cpu_usage`, spanmetrics 지연 단위 | 가정 (cores, seconds). 노드·컨테이너 CPU는 cores로 검증됨 | 수치 해석 | 해당 에이전트 구현 시 |
+| Kubernetes 이벤트 저장 위치 (Loki 여부) | 미확인 | Kubernetes Agent | 8단계 |
+| Kubernetes 전용 읽기 계정 | 준비 전 | Kubernetes API 연동 | 8b단계 |
+| 물리 서버 성능 수집 | 없음 (`system_*`는 Pod 단위) | Server Agent 확장 | 확장 단계 |
+| `pg_stat_statements`, 실행 계획, 잠금 그래프 | 수집되지 않음 | DB Agent 확장 | 확장 단계 |
+| DNS 응답 코드 | Hubble 지표에 없음 | Network Agent DNS 오류 분석 | 확장 단계 |
 | Hubble Relay 직접 조회 | 미확인 | Network Agent 확장 | 확장 단계 |
 | 사용자 인터페이스 형태 | CLI 먼저 (제안) | 인터페이스 계층 | HTTP API 단계 |
 | 기본 임계값 | 미정 | 판정 결과 | Server Agent 구현 시 |
 | 대화 이력(후속 질문) 지원 | 미정 | 상태 계층 | 초기 범위 확정 시 |
+
+탐색으로 해소된 항목(2026-09-29): 확인 지표 존재, 서비스 요청·오류·지연 지표(spanmetrics), Tempo DB span 속성, Valkey 지표.
