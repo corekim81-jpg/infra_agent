@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from infra_agent.agents.server import LIMIT_NEAR_CHECK
+from infra_agent.llm.policy import sample_rows
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.schemas import (
     AgentName,
@@ -21,8 +23,10 @@ from infra_agent.schemas import (
     Intent,
     JudgementBasis,
     Severity,
+    ToolResult,
     ToolStatus,
 )
+from infra_agent.units import fmt_time
 
 DOMAIN_NAMES = {
     "server": "서버 자원",
@@ -50,9 +54,9 @@ def _severity_counts(findings: Sequence[Finding]) -> str:
 
 
 def _compares(interp: Interpretation, results: Sequence[AgentResult]) -> bool:
-    """직전 구간 비교 결과를 먼저 답할지. 비교는 현재 Server Agent만 수행합니다."""
+    """직전 구간 비교 결과를 먼저 답할지. 비교는 Server·Service Agent가 수행합니다."""
     return interp.intent in (Intent.COMPARE, Intent.ANOMALY) and any(
-        r.agent is AgentName.SERVER for r in results
+        r.agent in (AgentName.SERVER, AgentName.SERVICE) for r in results
     )
 
 
@@ -96,6 +100,31 @@ def _summary(
     return text
 
 
+MAX_SHOWN_SAMPLES = 3
+
+
+def sample_texts(e: ToolResult) -> list[str]:
+    """근거의 로그·트레이스 발췌를 답변 표시용 문장으로 만듭니다 (근거당 최대 3건).
+
+    로그 본문은 도구 계층에서 제어문자 제거·마스킹·길이 제한을 거친 값입니다.
+    """
+    out: list[str] = []
+    for row in sample_rows(e)[:MAX_SHOWN_SAMPLES]:
+        when = row.get("time") or row.get("start")
+        stamp = fmt_time(datetime.fromisoformat(str(when))) if when else "시각 없음"
+        if "line" in row:
+            labels = row.get("labels") if isinstance(row.get("labels"), dict) else {}
+            service = labels.get("service_name", "?") if isinstance(labels, dict) else "?"
+            tid = f" (trace_id {row['trace_id']})" if row.get("trace_id") else ""
+            out.append(f"(로그 원문) {stamp} [{service}] {row['line']}{tid}")
+        else:
+            duration = row.get("duration_ms")
+            took = f", {float(duration):.0f}ms" if isinstance(duration, int | float) else ""
+            root = " ".join(str(x) for x in (row.get("root_service"), row.get("root_name")) if x)
+            out.append(f"(트레이스) {stamp} trace_id {row['trace_id']} {root}{took}".rstrip())
+    return out
+
+
 def synthesize(
     request_id: str, interp: Interpretation, results: Sequence[AgentResult]
 ) -> FinalAnswer:
@@ -120,6 +149,9 @@ def synthesize(
                 key_values["freshness_seconds"] = round(e.freshness_seconds, 1)
             if e.status in (ToolStatus.ERROR, ToolStatus.TIMEOUT) and e.error:
                 key_values["error"] = e.error
+            samples = sample_texts(e)
+            if samples:
+                key_values["samples"] = samples
             evidence.append(
                 EvidenceSummary(
                     source=e.source, query=e.query, time_range=e.time_range, key_values=key_values

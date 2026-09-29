@@ -23,7 +23,7 @@ InterpretMethod = Literal["rules", "model"]
 MAX_RANGE = timedelta(days=7)
 """개발 환경 Prometheus 보존 기간(1w) 기준 최대 조회 구간."""
 
-IMPLEMENTED_DOMAINS = frozenset({"server", "kubernetes"})
+IMPLEMENTED_DOMAINS = frozenset({"server", "kubernetes", "service"})
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "server": (
@@ -126,6 +126,10 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "trace",
         "요청",
         "request",
+        "오류",
+        "느려",
+        "느린",
+        "slow",
     ),
 }
 

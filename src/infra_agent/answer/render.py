@@ -8,6 +8,7 @@ from infra_agent.orchestration.executor import TaskRun
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.orchestration.runner import AnswerBundle
 from infra_agent.schemas import AgentStatus, EvidenceSummary, Intent, Severity, TimeRange
+from infra_agent.units import fmt_time
 
 _INTENT = {
     Intent.STATUS: "현재 상태 조회",
@@ -20,8 +21,7 @@ _SEVERITY = {Severity.CRITICAL: "심각", Severity.WARNING: "경고", Severity.I
 
 
 def _t(value: datetime) -> str:
-    local = value.astimezone()
-    return f"{local:%Y-%m-%d %H:%M:%S} {local.tzname() or ''}".strip()
+    return fmt_time(value)
 
 
 def _range(tr: TimeRange) -> str:
@@ -47,10 +47,23 @@ def _is_window(e: EvidenceSummary) -> bool:
 
 
 def _evidence_window(e: EvidenceSummary, at: datetime) -> str:
-    """근거의 시간 표현: 순간값은 시점, 구간 평균은 평균, 구간 증가량 등은 구간 집계."""
+    """근거의 시간 표현.
+
+    순간값은 시점, 구간 평균(`@window_avg`·`@baseline_avg`)은 평균, 구간 증가량(`@window`)은
+    구간 집계, 구간 시계열(`@series`)은 시계열, 로그·트레이스 조회는 조회 구간으로 표시합니다.
+    """
     if e.time_range is None:
         return f"{_t(at)} 시점"
-    return _range(e.time_range) + (" 구간 집계" if _is_window(e) else " 평균")
+    evidence_id = str(e.key_values.get("id", ""))
+    if evidence_id.endswith(("@window_avg", "@baseline_avg")):
+        suffix = " 평균"
+    elif "@series" in evidence_id:
+        suffix = " 시계열(최고 시점 탐색)"
+    elif _is_window(e):
+        suffix = " 구간 집계"
+    else:
+        suffix = " 구간 조회"
+    return _range(e.time_range) + suffix
 
 
 def _run_text(run: TaskRun) -> str:
@@ -118,6 +131,9 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         )
         if show_queries and e.query:
             lines.append(f"    {e.query}")
+        samples = kv.get("samples")
+        if isinstance(samples, list):
+            lines.extend(f"    · {s}" for s in samples)
     if answer.limitations:
         lines.append("")
         lines.append("[한계]")

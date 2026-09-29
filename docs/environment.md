@@ -64,7 +64,7 @@
 - `llm` 섹션(#15): `provider`(`fake`=모델 없음, `claude_agent_sdk`), `model`(`null`이면 SDK 기본값), `data_policy`(`none`·`aggregated`·`full`, architecture.md 10.2절), `max_calls_per_request`(요청당 모델 호출 상한), `max_budget_usd_per_request`(SDK에 호출마다 전달하는 비용 상한). 예시 파일은 개발 환경 결정에 따라 `claude_agent_sdk`·`full`입니다. 운영 설정에는 그대로 쓰지 않습니다.
   - SDK 설치: `python -m pip install -e ".[llm]"`. SDK는 Claude Code CLI를 실행하므로 CLI 인증(`ANTHROPIC_API_KEY` 또는 Claude Code 로그인)이 필요합니다.
   - SDK가 없거나 CLI를 실행할 수 없으면 규칙 기반 경로로 계속하고 답변에 그 사실을 표시합니다. `ask --no-llm`으로 모델 없이 실행할 수 있습니다.
-- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한 100(#21에서 60→100: 에이전트들이 공유하며 최신성·대상 존재 확인 조회 포함)). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
+- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한 100(#21에서 60→100: 에이전트들이 공유하며 최신성·대상 존재 확인 조회 포함), Service 기준(#23: 오류율 경고 5%·심각 20%, p95 지연 경고 1초, 오류율 판정 최소 요청률 0.01건/초, 오류율 증가 2%p, 지연 증가 0.1초, 상세 서비스 3개, 최고 시점 전후 600초, 로그·트레이스 샘플 3건)). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
 
 ### 2.4 환경 변수
 
@@ -123,7 +123,9 @@
 ### 3.4 Loki, Tempo
 
 - **Loki 라벨:** `service_name`(18개), `service_namespace`, `k8s_namespace_name`, `k8s_deployment_name`, `k8s_cluster_name`, `deployment_environment_name`.
-  **Kubernetes 이벤트가 Loki에 저장되는지는 아직 확인되지 않았습니다**(라벨 이름만으로는 판단 불가). Kubernetes Agent 단계(8단계)에서 LogQL로 확인합니다.
+  **Kubernetes 이벤트가 Loki에 저장되는지는 아직 확인되지 않았습니다**(라벨 이름만으로는 판단 불가).
+- **Service Agent의 Loki 사용(#23):** 카탈로그 `log.lines_total`·`log.error_lines`·`log.error_samples`(대상 라벨 `service_name`, `k8s_namespace_name`). 오류 판정은 본문 키워드(error, exception, fatal, panic) 기준이며, 로그 레벨 필드(`detected_level` 등)와 trace_id 구조화 메타데이터의 존재는 live 결과로 확인한 뒤 조회식 교체를 검토합니다.
+- **Service Agent의 Tempo 사용(#23):** `/api/search` TraceQL `{ resource.service.name = "<서비스>" && status = error }`(서비스 이름 형식 검사 후 리터럴로만 삽입).
 - **Tempo 태그:** resource 42개(`service.name`, `k8s.*` 등), span 149개(`db.system`, `db.statement`, `db.query.text`, `http.*`, `rpc.*` 등), event 16개(`exception.*` 등).
   `db.statement`·`db.query.text`에는 **SQL 원문**이 담기므로 모델 입력 데이터 정책(architecture.md 10.2절) 결정 시 함께 고려합니다.
 

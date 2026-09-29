@@ -22,7 +22,7 @@ import asyncio
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from infra_agent.catalog import Catalog, CatalogItem
@@ -232,6 +232,99 @@ class CatalogQueryTool:
             for s in result.samples
             if not (math.isnan(s.value) or math.isinf(s.value))
         ]
+        return QueryOutcome(
+            result=ToolResult(
+                evidence_id=evidence_id,
+                source=DataSourceKind.PROMETHEUS,
+                query=expr,
+                time_range=window,
+                status=ToolStatus.OK if rows else ToolStatus.EMPTY,
+                data=rows,
+                fetched_at=utc_now(),
+                freshness_seconds=freshness,
+                unit=item.unit,
+            )
+        )
+
+    async def series_peaks(
+        self,
+        key: str,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        window: TimeRange,
+        max_points: int = 60,
+        label: str | None = None,
+    ) -> QueryOutcome:
+        """구간 시계열을 조회해 대상별 최댓값과 그 시각(`peak_at`)을 돌려줍니다.
+
+        "오류가 증가한 시간대"처럼 구간 안의 시점을 찾을 때 씁니다. 평가식은 `current`와 같습니다
+        (rate 계열은 `RATE_RANGE`). 근거 ID는 `<key>@series` 또는 `<key>@series:<label>`
+        (같은 항목을 대상별로 여러 번 조회할 때 구분).
+        """
+        item = self.item(key)
+        evidence_id = f"{key}@series" + (f":{label}" if label else "")
+        selector, unsupported = item.selector_for(targets)
+        if unsupported:
+            return QueryOutcome(
+                result=ToolResult(
+                    evidence_id=evidence_id,
+                    source=DataSourceKind.PROMETHEUS,
+                    query="",
+                    time_range=window,
+                    status=ToolStatus.ERROR,
+                    fetched_at=utc_now(),
+                    error="대상 필터를 적용할 수 없어 조회하지 않음: "
+                    + ", ".join(k.value for k in unsupported),
+                ),
+                unsupported_targets=unsupported,
+                skipped=True,
+            )
+        expr = self.build_expr(item, selector, QueryMode.CURRENT, ctx)
+        step = max(60, int(window.duration.total_seconds() // max(1, max_points)))
+        freshness = await self.freshness(item, window.end)
+
+        def failed(status: ToolStatus, error: str) -> QueryOutcome:
+            return QueryOutcome(
+                result=ToolResult(
+                    evidence_id=evidence_id,
+                    source=DataSourceKind.PROMETHEUS,
+                    query=expr,
+                    time_range=window,
+                    status=status,
+                    fetched_at=utc_now(),
+                    freshness_seconds=freshness,
+                    error=error,
+                )
+            )
+
+        if not self._budget.take():
+            return failed(
+                ToolStatus.ERROR,
+                "요청당 조회 호출 상한(analysis.max_tool_calls)에 도달해 조회하지 않음",
+            )
+        try:
+            series = await asyncio.wait_for(
+                self._prom.query_range(expr, window.start, window.end, step),
+                timeout=self._timeout,
+            )
+        except TimeoutError:
+            return failed(ToolStatus.TIMEOUT, f"조회 제한 시간({self._timeout:.0f}초) 초과")
+        except DataSourceError as exc:
+            status = ToolStatus.TIMEOUT if exc.code == "timeout" else ToolStatus.ERROR
+            return failed(status, f"{exc.code}: {exc.message}")
+        rows = []
+        for s in series:
+            points = [(ts, v) for ts, v in s.points if not (math.isnan(v) or math.isinf(v))]
+            if not points:
+                continue
+            ts, value = max(points, key=lambda p: p[1])
+            rows.append(
+                {
+                    "labels": s.labels,
+                    "value": value,
+                    "peak_at": datetime.fromtimestamp(ts, tz=UTC).isoformat(),
+                }
+            )
         return QueryOutcome(
             result=ToolResult(
                 evidence_id=evidence_id,

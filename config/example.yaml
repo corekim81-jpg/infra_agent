@@ -57,3 +57,14 @@ analysis:                    # 판정 기준 (제안 기본값)
   stale_after_seconds: 300   # 최신 샘플이 5분보다 오래되면 데이터 지연
   top_n: 5
   max_tool_calls: 100       # 요청당 조회 호출 상한 (여러 에이전트가 공유, 최신성·대상 확인 조회 포함)
+  # Service Agent
+  error_ratio_warning: 0.05          # 오류 span 비율 경고 (호출 경로 실패율에도 적용)
+  error_ratio_critical: 0.2
+  latency_p95_warning_seconds: 1.0
+  min_request_rate: 0.01             # 건/초. 이보다 요청이 적은 서비스는 오류율을 판정하지 않음
+  min_error_ratio_increase: 0.02     # 직전 구간 대비 2%p 이상 증가 시 "증가"
+  min_latency_increase_seconds: 0.1
+  detail_services: 3                 # 로그·트레이스를 자세히 볼 오류 서비스 수
+  peak_window_seconds: 600           # 오류율 최고 시점 전후로 볼 구간
+  log_sample_limit: 3
+  trace_sample_limit: 3

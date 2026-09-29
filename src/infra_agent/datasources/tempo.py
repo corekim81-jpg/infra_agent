@@ -1,11 +1,14 @@
-"""Tempo HTTP API 읽기 전용 최소 클라이언트 (탐색용).
+"""Tempo HTTP API 읽기 전용 클라이언트.
 
-트레이스 검색·조회는 Service Agent 단계(9단계)에서 추가합니다.
+- 탐색: 태그 이름
+- 조회(9단계): TraceQL 검색(`search`, 건수 제한). 트레이스 전체 조회는 아직 하지 않습니다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -13,9 +16,20 @@ import httpx
 from infra_agent.config.settings import HttpDatasourceConfig
 from infra_agent.datasources.errors import HttpStatusError, ResponseFormatError
 from infra_agent.datasources.http import HttpDataSource
+from infra_agent.timeutil import ensure_utc
 
 SOURCE = "tempo"
 ALLOWED_PATHS = ("/ready", "/api/")
+MAX_SEARCH_LIMIT = 50
+
+
+@dataclass(frozen=True)
+class TraceSummary:
+    trace_id: str
+    root_service: str | None
+    root_name: str | None
+    start: datetime | None
+    duration_ms: float | None
 
 
 class TempoClient:
@@ -77,3 +91,46 @@ class TempoClient:
         if not isinstance(body, dict) or not isinstance(body.get("tagNames"), list):
             raise ResponseFormatError(SOURCE, "태그 이름 응답 형식이 올바르지 않습니다")
         return {"all": sorted(str(t) for t in body["tagNames"])}
+
+    async def search(
+        self, traceql: str, start: datetime, end: datetime, limit: int
+    ) -> list[TraceSummary]:
+        """TraceQL 검색. 건수는 `MAX_SEARCH_LIMIT`을 넘지 않습니다."""
+        limit = max(1, min(limit, MAX_SEARCH_LIMIT))
+        params = [
+            ("q", traceql),
+            ("start", str(int(ensure_utc(start).timestamp()))),
+            ("end", str(int(ensure_utc(end).timestamp()))),
+            ("limit", str(limit)),
+        ]
+        body = await self._http.get_json("/api/search", params)
+        if not isinstance(body, dict):
+            raise ResponseFormatError(SOURCE, "검색 응답 형식이 올바르지 않습니다")
+        traces = body.get("traces") or []
+        if not isinstance(traces, list):
+            raise ResponseFormatError(SOURCE, "traces 형식이 올바르지 않습니다")
+        out: list[TraceSummary] = []
+        for item in traces[:limit]:
+            if not isinstance(item, dict) or not item.get("traceID"):
+                raise ResponseFormatError(SOURCE, "트레이스 항목 형식이 올바르지 않습니다")
+            started: datetime | None = None
+            if item.get("startTimeUnixNano"):
+                try:
+                    started = datetime.fromtimestamp(
+                        int(item["startTimeUnixNano"]) / 1_000_000_000, tz=UTC
+                    )
+                except (TypeError, ValueError):
+                    started = None
+            duration = item.get("durationMs")
+            out.append(
+                TraceSummary(
+                    trace_id=str(item["traceID"]),
+                    root_service=str(item["rootServiceName"])
+                    if item.get("rootServiceName")
+                    else None,
+                    root_name=str(item["rootTraceName"]) if item.get("rootTraceName") else None,
+                    start=started,
+                    duration_ms=float(duration) if isinstance(duration, int | float) else None,
+                )
+            )
+        return out

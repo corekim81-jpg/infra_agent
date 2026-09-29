@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
@@ -19,12 +20,19 @@ import httpx
 from infra_agent.agents.base import Agent
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.kubernetes import KubernetesAgent
-from infra_agent.agents.prompts import KUBERNETES_SYSTEM_PROMPT, SERVER_SYSTEM_PROMPT
+from infra_agent.agents.prompts import (
+    KUBERNETES_SYSTEM_PROMPT,
+    SERVER_SYSTEM_PROMPT,
+    SERVICE_SYSTEM_PROMPT,
+)
 from infra_agent.agents.server import ServerAgent
+from infra_agent.agents.service import ServiceAgent
 from infra_agent.answer.synthesis import synthesize
 from infra_agent.catalog import Catalog
 from infra_agent.config.settings import Settings
+from infra_agent.datasources.loki import LokiClient
 from infra_agent.datasources.prometheus import PrometheusClient
+from infra_agent.datasources.tempo import TempoClient
 from infra_agent.llm import BudgetedLLM, LLMClient, LLMUnavailableError, make_llm
 from infra_agent.llm.policy import allows_observations
 from infra_agent.orchestration.executor import Executor, TaskRun
@@ -41,7 +49,7 @@ from infra_agent.schemas import (
     TargetRef,
 )
 from infra_agent.timeutil import parse_duration, utc_now
-from infra_agent.tools import CatalogQueryTool, ToolBudget
+from infra_agent.tools import CatalogQueryTool, LogQueryTool, ToolBudget, TraceSearchTool
 
 
 @dataclass(frozen=True)
@@ -67,6 +75,8 @@ class AgentDeps:
     prometheus: PrometheusClient
     tool_budget: ToolBudget
     llm: BudgetedLLM | None
+    loki: LokiClient | None = None
+    tempo: TempoClient | None = None
 
 
 def _explainer(deps: AgentDeps, agent: AgentName, prompt: str) -> AgentExplainer | None:
@@ -106,11 +116,43 @@ def _build_kubernetes(deps: AgentDeps) -> Agent:
     )
 
 
+def _build_service(deps: AgentDeps) -> Agent:
+    timeout = deps.settings.execution.tool_timeout_seconds
+    logs = (
+        LogQueryTool(
+            deps.catalog,
+            deps.loki,
+            agent=AgentName.SERVICE,
+            budget=deps.tool_budget,
+            timeout_seconds=timeout,
+        )
+        if deps.loki is not None
+        else None
+    )
+    traces = (
+        TraceSearchTool(
+            deps.tempo, agent=AgentName.SERVICE, budget=deps.tool_budget, timeout_seconds=timeout
+        )
+        if deps.tempo is not None
+        else None
+    )
+    return ServiceAgent(
+        _tool(deps, AgentName.SERVICE),
+        deps.settings.analysis,
+        logs=logs,
+        traces=traces,
+        explainer=_explainer(deps, AgentName.SERVICE, SERVICE_SYSTEM_PROMPT),
+        # 상세 단계: 조회 1회 제한 시간 + 모델 해석 최소 시간(5초) + 여유(2초)
+        detail_min_seconds=timeout + 7,
+    )
+
+
 AGENT_BUILDERS: Mapping[AgentName, Callable[[AgentDeps], Agent]] = {
     AgentName.SERVER: _build_server,
     AgentName.KUBERNETES: _build_kubernetes,
+    AgentName.SERVICE: _build_service,
 }
-"""구현된 에이전트. 이후 Service·DB·Network 에이전트를 여기에 추가합니다."""
+"""구현된 에이전트. 이후 DB·Network 에이전트를 여기에 추가합니다."""
 
 
 def build_context(
@@ -198,17 +240,38 @@ async def answer_question(
     plan = build_plan(interp.domains, AGENT_BUILDERS.keys())
     report = None
     if plan.tasks:
-        async with PrometheusClient.from_config(
-            settings.datasources.prometheus,
-            max_retries=settings.execution.max_retries,
-            transport=transport,
-        ) as prom:
+        async with AsyncExitStack() as stack:
+            retries = settings.execution.max_retries
+            sources = settings.datasources
+            prom = await stack.enter_async_context(
+                PrometheusClient.from_config(
+                    sources.prometheus, max_retries=retries, transport=transport
+                )
+            )
+            # 로그·트레이스는 Service Agent가 계획에 있고 데이터 소스가 켜져 있을 때만 연결합니다.
+            wants_service = any(t.agent is AgentName.SERVICE for t in plan.tasks)
+            loki = (
+                await stack.enter_async_context(
+                    LokiClient.from_config(sources.loki, max_retries=retries, transport=transport)
+                )
+                if wants_service and sources.loki.enabled
+                else None
+            )
+            tempo = (
+                await stack.enter_async_context(
+                    TempoClient.from_config(sources.tempo, max_retries=retries, transport=transport)
+                )
+                if wants_service and sources.tempo.enabled
+                else None
+            )
             deps = AgentDeps(
                 settings=settings,
                 catalog=catalog,
                 prometheus=prom,
                 tool_budget=ToolBudget(max_calls=ctx.budget.max_tool_calls),
                 llm=budgeted,
+                loki=loki,
+                tempo=tempo,
             )
             agents = {t.agent: AGENT_BUILDERS[t.agent](deps) for t in plan.tasks}
             executor = Executor(
