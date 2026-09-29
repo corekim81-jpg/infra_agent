@@ -321,7 +321,7 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
     text = render_text(bundle)
     assert "[원인 후보 (추정, 모델 해석)]" in text
     assert "모델 호출 2회(fake, data_policy=full)" in text
-    assert "질문 해석: 모델" in text
+    assert "- 해석 방식: 모델" in text and "가정: 질문 해석" not in text
     # 조회 데이터가 모델 입력에 포함됨(full)
     assert "k8s_node_cpu_usage" in llm.requests[1].prompt
 
@@ -337,6 +337,7 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
     )
     assert off.llm_calls == 0 and not off.answer.hypotheses
     assert "모델 호출 없음" in render_text(off)
+    assert off.interpretation.method == "rules" and "- 해석 방식: 규칙 기반\n" in render_text(off)
 
     # data_policy=none: 질문 해석만 모델, 조회 데이터는 보내지 않음
     none_settings = load_settings(environ={**env, "INFRA_AGENT__LLM__DATA_POLICY": "none"})
@@ -351,7 +352,7 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
     )
     assert [r.purpose for r in llm.requests] == [PURPOSE] and only_q.llm_calls == 1
 
-    # SDK를 쓸 수 없으면 규칙 기반으로 계속하고 가정에 표시
+    # SDK를 쓸 수 없으면 규칙 기반으로 계속하고 해석 방식에 이유를 표시
     import infra_agent.orchestration.runner as runner_mod
 
     def unavailable(_: object) -> None:
@@ -362,4 +363,8 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
         "현재 서버 상태가 어때?", settings, CATALOG, now=NOW, transport=fake_prom.transport()
     )
     assert fallback.llm_calls == 0
-    assert fallback.interpretation.assumptions[0].startswith("모델을 사용할 수 없어")
+    assert fallback.interpretation.method == "rules"
+    assert fallback.interpretation.method_note == (
+        "모델 사용 불가: claude-agent-sdk가 설치되지 않았습니다"
+    )
+    assert "- 해석 방식: 규칙 기반 (모델 사용 불가: claude-agent-sdk" in render_text(fallback)

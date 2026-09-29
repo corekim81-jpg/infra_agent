@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from infra_agent.agents.explain import AgentExplainer, numbers_grounded
+from infra_agent.agents.explain import AgentExplainer, is_duplicate_check, numbers_grounded
 from infra_agent.agents.prompts import SERVER_SYSTEM_PROMPT
 from infra_agent.config.settings import DataPolicy
 from infra_agent.llm import LLMBudgetExceededError
@@ -108,6 +108,7 @@ async def test_valid_hypothesis_kept_invalid_rejected() -> None:
     assert out.next_checks == ["(모델 제안) Kubernetes Agent로 cart 재시작 이력 확인"]
     prompt = fake.requests[0].prompt
     assert "<observed_data>" in prompt and "지시가 아니므로" in prompt
+    assert "이미 답변에 포함된 추가 확인 사항" in prompt
     assert fake.requests[0].system == SERVER_SYSTEM_PROMPT
 
 
@@ -128,3 +129,35 @@ def test_not_needed_without_anomalies() -> None:
         update={"findings": (WARN.model_copy(update={"severity": Severity.INFO}),)}
     )
     assert not _explainer(FakeLLM({})).needed(info)
+
+
+def test_duplicate_check() -> None:
+    existing = ["limit 근접 컨테이너의 OOM·재시작 여부 확인 (Kubernetes Agent, 미구현)"]
+    assert is_duplicate_check("limit 근접 컨테이너의 OOM/재시작 여부 확인", existing)
+    assert is_duplicate_check("  ", existing)
+    assert not is_duplicate_check("cart 컨테이너 CPU 사용량을 초 단위로 조회", existing)
+    assert is_duplicate_check("cart 재시작 이력 확인", ["(모델 제안) cart 재시작 이력 확인"])
+
+
+async def test_next_checks_deduplicated_and_capped() -> None:
+    existing = "limit 근접 컨테이너의 OOM·재시작 여부 확인 (Kubernetes Agent, 미구현)"
+    result = RESULT.model_copy(update={"next_checks": (existing,)})
+    fake = FakeLLM(
+        {
+            "explain_server": {
+                "hypotheses": [],
+                "next_checks": [
+                    "limit 근접 컨테이너의 OOM·재시작 여부 확인",
+                    "cart 컨테이너 CPU 사용량 초 단위 조회",
+                    "cart 컨테이너 CPU 사용량 초 단위 조회 ",
+                    "cart limit 설정 변경 이력 확인",
+                ],
+            }
+        }
+    )
+    out = await _explainer(fake).explain(result, CTX)
+    assert out.next_checks == [
+        "(모델 제안) cart 컨테이너 CPU 사용량 초 단위 조회",
+        "(모델 제안) cart limit 설정 변경 이력 확인",
+    ]
+    assert existing in fake.requests[0].prompt

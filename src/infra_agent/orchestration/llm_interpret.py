@@ -2,12 +2,13 @@
 
 - 모델에는 질문 문장만 보냅니다(모든 data_policy에서 허용되는 범위).
 - 모델 출력은 스키마로 검증한 뒤 규칙 기반 해석과 같은 `finalize()`로 보정합니다.
-- 모델 호출·검증이 실패하면 규칙 기반 해석으로 대체하고 그 사실을 가정에 표시합니다.
+- 모델 호출·검증이 실패하면 규칙 기반 해석으로 대체하고 그 사실을 `method_note`에 표시합니다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -80,15 +81,7 @@ async def interpret_with_model(
             range_override=range_override,
             target_overrides=target_overrides,
         )
-        return Interpretation(
-            intent=fallback.intent,
-            time_range=fallback.time_range,
-            baseline_range=fallback.baseline_range,
-            targets=fallback.targets,
-            domains=fallback.domains,
-            unsupported_domains=fallback.unsupported_domains,
-            assumptions=(f"모델 해석 실패({reason})로 규칙 기반 해석 사용", *fallback.assumptions),
-        )
+        return replace(fallback, method_note=f"모델 해석 실패: {reason}")
 
     targets: dict[TargetKind, str] = {}
     for kind, value in (
@@ -99,7 +92,7 @@ async def interpret_with_model(
         if value:
             targets[kind] = value.strip().lower()
     dropped = [v for v in targets.values() if not _looks_like_name(v)]
-    notes = ["질문 해석: 모델"]
+    notes: list[str] = []
     if dropped:
         notes.append(f"모델이 제시한 대상 중 이름 형식이 아닌 값 제외: {', '.join(dropped)}")
     return finalize(
@@ -112,6 +105,7 @@ async def interpret_with_model(
         range_override=range_override,
         target_overrides=target_overrides,
         assumptions=notes,
+        method="model",
     )
 
 

@@ -42,7 +42,8 @@ async def test_model_interpretation_used() -> None:
     assert r.time_range.duration == timedelta(hours=1) and r.baseline_range is not None
     assert r.targets == {TargetKind.NAMESPACE: "otel-demo"}
     assert r.unsupported_domains == {"db"}
-    assert r.assumptions[0] == "질문 해석: 모델"
+    assert r.method == "model" and r.method_note is None
+    assert r.assumptions == ()  # 해석 방식은 가정이 아님
     req = fake.requests[0]
     assert req.prompt.startswith("otel-demo") and req.schema is not None
     assert "<observed_data>" not in req.prompt  # 질문 해석에는 조회 데이터를 보내지 않음
@@ -68,7 +69,11 @@ async def test_fallback_to_rules_on_error_or_bad_output() -> None:
     fake = FakeLLM({PURPOSE: LLMPolicyViolationError("모델이 도구(Bash) 사용을 시도")})
     r = await interpret_with_model(q, fake, NOW, D30)
     assert r.intent is Intent.ANOMALY
-    assert r.assumptions[0].startswith("모델 해석 실패(모델이 도구(Bash)")
+    assert r.method == "rules"
+    assert r.method_note is not None and r.method_note.startswith(
+        "모델 해석 실패: 모델이 도구(Bash)"
+    )
     bad = FakeLLM({PURPOSE: {"intent": "delete_everything", "domains": []}})
     r2 = await interpret_with_model(q, bad, NOW, D30)
-    assert r2.assumptions[0].startswith("모델 해석 실패(모델 출력 형식 오류)")
+    assert r2.method_note == "모델 해석 실패: 모델 출력 형식 오류"
+    assert not any("모델" in a for a in r2.assumptions)

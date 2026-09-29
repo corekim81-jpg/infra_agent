@@ -291,6 +291,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             "request_id": bundle.context.request_id,
             "intent": bundle.context.intent.value,
             "assumptions": list(bundle.interpretation.assumptions),
+            "interpretation_method": bundle.interpretation.method,
+            "interpretation_note": bundle.interpretation.method_note,
             "llm": {
                 "provider": bundle.llm_name,
                 "calls": bundle.llm_calls,

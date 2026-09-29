@@ -46,7 +46,7 @@ async def test_model_interprets_question(settings: Settings) -> None:
         utc_now(),
         parse_duration(settings.execution.default_time_range),
     )
-    assert interp.assumptions[0] == "질문 해석: 모델", interp.assumptions  # 규칙 대체가 아님
+    assert interp.method == "model", interp.method_note  # 규칙 대체가 아님
     assert interp.intent in (Intent.ANOMALY, Intent.COMPARE)
     assert "server" in interp.domains
     print("\n", interp)
@@ -78,5 +78,5 @@ async def test_ask_uses_model(settings: Settings) -> None:
         "현재 서버 상태가 어때?", settings, load_catalog(settings.catalog.path)
     )
     assert bundle.llm_calls >= 1
-    assert bundle.interpretation.assumptions[0] == "질문 해석: 모델"
+    assert bundle.interpretation.method == "model", bundle.interpretation.method_note
     print("\n" + render_text(bundle))

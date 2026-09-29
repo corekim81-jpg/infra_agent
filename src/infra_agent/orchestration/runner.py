@@ -86,7 +86,7 @@ def _prepare_llm(
         try:
             client = make_llm(settings)
         except LLMUnavailableError as exc:
-            notes.append(f"모델을 사용할 수 없어({exc.message}) 규칙 기반으로 처리")
+            notes.append(f"모델 사용 불가: {exc.message}")
             return None, notes
     if client is None:
         return None, notes
@@ -127,7 +127,7 @@ async def answer_question(
             target_overrides=target_overrides,
         )
     if notes:
-        interp = replace(interp, assumptions=(*notes, *interp.assumptions))
+        interp = replace(interp, method_note="; ".join(notes))
     ctx = build_context(question, interp, settings, current, budgeted.max_calls if budgeted else 0)
     policy = settings.llm.data_policy
     explainer = (

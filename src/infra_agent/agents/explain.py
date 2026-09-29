@@ -6,6 +6,7 @@
   - 문장 속 수치는 모델에 제공한 관측 데이터에 그대로 있어야 함 (지어낸 수치 차단)
   - confidence는 low/medium만 허용 (모델 추정을 high로 표시하지 않음)
 - 사실(Finding kind=fact)은 코드 판정만 사용하며 모델이 바꾸지 않습니다.
+- 추가 확인 제안은 코드가 이미 낸 항목과 겹치면 제외합니다(정규화 후 동일·포함 관계).
 """
 
 from __future__ import annotations
@@ -30,8 +31,10 @@ from infra_agent.schemas import (
 )
 
 MAX_HYPOTHESES = 5
-MAX_NEXT_CHECKS = 5
+MAX_NEXT_CHECKS = 3
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_NORMALIZE_RE = re.compile(r"[\s\W_]+")
+MODEL_CHECK_PREFIX = "(모델 제안) "
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -71,7 +74,7 @@ class _Hypothesis(BaseModel):
 class _Explanation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     hypotheses: list[_Hypothesis] = Field(default_factory=list, max_length=MAX_HYPOTHESES)
-    next_checks: list[str] = Field(default_factory=list, max_length=MAX_NEXT_CHECKS)
+    next_checks: list[str] = Field(default_factory=list)  # 초과분은 중복 제거 후 잘라냄
 
 
 @dataclass
@@ -80,6 +83,22 @@ class Explanation:
     next_checks: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
     llm_calls: int = 0
+
+
+def _normalize(text: str) -> str:
+    return _NORMALIZE_RE.sub("", text).lower()
+
+
+def is_duplicate_check(candidate: str, existing: list[str]) -> bool:
+    """공백·기호를 무시하고 같거나 한쪽이 다른 쪽을 포함하면 중복으로 봅니다."""
+    key = _normalize(candidate)
+    if not key:
+        return True
+    for other in existing:
+        other_key = _normalize(other.removeprefix(MODEL_CHECK_PREFIX))
+        if other_key and (key == other_key or key in other_key or other_key in key):
+            return True
+    return False
 
 
 def numbers_grounded(statement: str, observed: str) -> bool:
@@ -106,10 +125,13 @@ class AgentExplainer:
         if observed is None:
             return out  # data_policy=none: 조회 결과를 모델에 보내지 않음
         window = f"{ctx.time_range.start.isoformat()} ~ {ctx.time_range.end.isoformat()}"
+        existing_checks = "\n".join(f"- {c}" for c in result.next_checks) or "- (없음)"
         prompt = (
             f"질문: {ctx.question}\n"
             f"분석 구간(UTC): {window}\n"
             f"{DATA_GUARD}\n\n{observed}\n\n"
+            f"이미 답변에 포함된 추가 확인 사항 (같은 내용은 다시 제안하지 마세요):\n"
+            f"{existing_checks}\n\n"
             "위 관측 데이터의 이상 징후에 대해 원인 후보(hypotheses)와 "
             "추가 확인 사항(next_checks)을 JSON으로 제시하세요."
         )
@@ -147,8 +169,13 @@ class AgentExplainer:
             out.limitations.append(
                 f"모델이 제시한 원인 후보 {rejected}건은 근거 ID 또는 수치 검증에 실패해 제외함"
             )
+        seen = list(result.next_checks)
         for check in parsed.next_checks:
             text = check.strip()
-            if text and numbers_grounded(text, observed):
-                out.next_checks.append(f"(모델 제안) {text}")
+            if not text or not numbers_grounded(text, observed) or is_duplicate_check(text, seen):
+                continue
+            seen.append(text)
+            out.next_checks.append(f"{MODEL_CHECK_PREFIX}{text}")
+            if len(out.next_checks) >= MAX_NEXT_CHECKS:
+                break
         return out

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from infra_agent.orchestration.rules import Interpretation
 from infra_agent.orchestration.runner import AnswerBundle
 from infra_agent.schemas import Intent, Severity, TimeRange
 
@@ -26,6 +27,12 @@ def _range(tr: TimeRange) -> str:
     return f"{_t(tr.start)} ~ {_t(tr.end)}"
 
 
+def _method(interp: Interpretation) -> str:
+    if interp.method == "model":
+        return "모델"
+    return f"규칙 기반 ({interp.method_note})" if interp.method_note else "규칙 기반"
+
+
 def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
     interp, ctx, answer = bundle.interpretation, bundle.context, bundle.answer
     lines: list[str] = []
@@ -41,6 +48,7 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append(f"- 기준 구간: {_range(ctx.baseline_range)}")
     targets = ", ".join(f"{t.kind.value}={t.name}" for t in ctx.targets) or "전체"
     lines.append(f"- 대상: {targets}")
+    lines.append(f"- 해석 방식: {_method(interp)}")
     for a in interp.assumptions:
         lines.append(f"- 가정: {a}")
     lines.append("")
