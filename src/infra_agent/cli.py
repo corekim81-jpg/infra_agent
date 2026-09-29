@@ -303,6 +303,17 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                 "data_policy": bundle.data_policy,
             },
             "answer": bundle.answer.model_dump(mode="json"),
+            "execution": [
+                {
+                    "task_id": r.task_id,
+                    "agent": r.agent,
+                    "depends_on": list(r.depends_on),
+                    "status": r.status.value,
+                    "elapsed_ms": r.elapsed_ms,
+                    "reason": r.reason,
+                }
+                for r in bundle.runs
+            ],
             "rejected_hypotheses": [
                 {"agent": r.agent.value, **x.model_dump(mode="json")}
                 for r in bundle.results

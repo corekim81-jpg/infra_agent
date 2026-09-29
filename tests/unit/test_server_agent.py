@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from expr_prom import ExprProm, Rows
 from infra_agent.agents.server import ServerAgent
 from infra_agent.answer.render import render_text
@@ -24,6 +26,7 @@ from infra_agent.schemas import (
     JudgementBasis,
     Severity,
     TargetKind,
+    TargetRef,
     TimeRange,
 )
 from infra_agent.tools import CatalogQueryTool, QueryMode, ToolBudget
@@ -93,7 +96,11 @@ async def _run(ctx: AnalysisContext, fake: ExprProm, targets: dict[TargetKind, s
         tool = CatalogQueryTool(
             CATALOG, prom, agent=AgentName.SERVER, budget=ToolBudget(60), timeout_seconds=5
         )
-        return await ServerAgent(tool, AnalysisConfig()).run(TASK, ctx, targets or {})
+        if targets:
+            ctx = ctx.model_copy(
+                update={"targets": tuple(TargetRef(kind=k, name=v) for k, v in targets.items())}
+            )
+        return await ServerAgent(tool, AnalysisConfig()).run(TASK, ctx, {})
 
 
 async def test_status_thresholds() -> None:
@@ -212,6 +219,9 @@ async def test_answer_question_end_to_end() -> None:
     assert "기준을 넘는 이상 징후 2건(심각 1건, 경고 1건)" in text
     assert "k8s_node_cpu_usage" in text  # --show-queries
     assert "모델 호출 없음" in text
+    assert bundle.plan is not None and [t.task_id for t in bundle.plan.tasks] == ["server-1"]
+    assert [(r.task_id, r.status) for r in bundle.runs] == [("server-1", AgentStatus.SUCCESS)]
+    assert "(에이전트 실행: server 성공 " in text
 
     other = await answer_question(
         "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘",
@@ -224,6 +234,36 @@ async def test_answer_question_end_to_end() -> None:
     assert "답할 수 없습니다" in other.answer.summary
     assert len(other.answer.unverified_areas) == 3
     assert "- 실행한 조회 없음" in render_text(other)
+    assert other.runs == () and "에이전트 실행" not in render_text(other)
+
+
+async def test_agent_failure_is_isolated_in_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """에이전트가 예외를 던져도 요청 전체가 실패하지 않고 확인하지 못한 영역으로 답합니다."""
+    import infra_agent.orchestration.runner as runner_mod
+
+    class Broken:
+        name = AgentName.SERVER
+
+        async def run(self, task: AgentTask, ctx: AnalysisContext, upstream: object) -> object:
+            raise RuntimeError("내부 오류 token=abcd1234secret")
+
+    monkeypatch.setitem(runner_mod.AGENT_BUILDERS, AgentName.SERVER, lambda deps: Broken())  # type: ignore[attr-defined]
+    settings = load_settings(
+        environ={
+            "INFRA_AGENT_PROFILE": "dev-tunnel",
+            "INFRA_AGENT__DATASOURCES__PROMETHEUS__ENABLED": "true",
+            "INFRA_AGENT__DATASOURCES__PROMETHEUS__URL": "http://prom.synthetic.test",
+        }
+    )
+    bundle = await answer_question(
+        "현재 서버 상태가 어때?", settings, CATALOG, now=NOW, transport=ExprProm().transport()
+    )
+    assert bundle.results[0].status is AgentStatus.FAILED
+    assert "판단하지 못했습니다" in bundle.answer.summary
+    text = render_text(bundle)
+    assert "server 에이전트: 실패로 확인하지 못함 (에이전트 오류(RuntimeError)" in text
+    assert "abcd1234secret" not in text
+    assert "(에이전트 실행: server 실패 " in text
 
 
 async def test_anomaly_summary_answers_increase_first() -> None:

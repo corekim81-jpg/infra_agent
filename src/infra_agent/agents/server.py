@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from infra_agent.agents.base import context_targets
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.formatting import entity_of, fmt_delta, fmt_value, row_key
 from infra_agent.config.settings import AnalysisConfig
@@ -138,8 +139,13 @@ class ServerAgent:
         self._explainer = explainer
 
     async def run(
-        self, task: AgentTask, ctx: AnalysisContext, targets: Mapping[TargetKind, str]
+        self,
+        task: AgentTask,
+        ctx: AnalysisContext,
+        upstream: Mapping[str, AgentResult] | None = None,
     ) -> AgentResult:
+        """선행 작업이 없는 독립 분석이므로 `upstream`은 사용하지 않습니다."""
+        targets = context_targets(ctx)
         col = _Collector()
         col.limit(SCOPE_NOTE)
         if ctx.intent in (Intent.COMPARE, Intent.ANOMALY) and ctx.baseline_range is not None:

@@ -1,19 +1,22 @@
-"""질문 처리 흐름 (모델 없이): 해석 → 컨텍스트 → 에이전트 실행 → 종합.
+"""질문 처리 흐름: 해석 → 컨텍스트 → 실행 계획 → 실행기 → 종합.
 
-현재는 Server Agent만 구현되어 있어 순차 실행합니다.
-병렬 실행기·다중 에이전트는 7단계에서 추가합니다.
+- 에이전트는 요청마다 새로 만들고, 조회 예산(ToolBudget)·모델 호출 예산(BudgetedLLM)·
+  데이터 소스 연결을 요청 단위로 공유합니다.
+- 구현된 에이전트는 `AGENT_BUILDERS`에 등록합니다. 등록되지 않은 분야는 계획에 넣지 않고
+  "확인하지 못한 영역"으로 답합니다.
 """
 
 from __future__ import annotations
 
-import asyncio
+import time
 import uuid
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 import httpx
 
+from infra_agent.agents.base import Agent
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.prompts import SERVER_SYSTEM_PROMPT
 from infra_agent.agents.server import ServerAgent
@@ -23,16 +26,15 @@ from infra_agent.config.settings import Settings
 from infra_agent.datasources.prometheus import PrometheusClient
 from infra_agent.llm import BudgetedLLM, LLMClient, LLMUnavailableError, make_llm
 from infra_agent.llm.policy import allows_observations
+from infra_agent.orchestration.executor import Executor, TaskRun
 from infra_agent.orchestration.llm_interpret import interpret_with_model
+from infra_agent.orchestration.plan import ExecutionPlan, build_plan
 from infra_agent.orchestration.rules import Interpretation, interpret
 from infra_agent.schemas import (
     AgentName,
     AgentResult,
-    AgentStatus,
-    AgentTask,
     AnalysisContext,
     Budget,
-    ErrorInfo,
     FinalAnswer,
     TargetKind,
     TargetRef,
@@ -51,6 +53,44 @@ class AnswerBundle:
     llm_calls: int = 0
     llm_cost_usd: float = 0.0
     data_policy: str = "none"
+    plan: ExecutionPlan | None = None
+    runs: tuple[TaskRun, ...] = field(default_factory=tuple)
+
+
+@dataclass
+class AgentDeps:
+    """요청 단위로 에이전트가 공유하는 자원."""
+
+    settings: Settings
+    catalog: Catalog
+    prometheus: PrometheusClient
+    tool_budget: ToolBudget
+    llm: BudgetedLLM | None
+
+
+def _build_server(deps: AgentDeps) -> Agent:
+    policy = deps.settings.llm.data_policy
+    explainer = (
+        AgentExplainer(
+            deps.llm, purpose="explain_server", system_prompt=SERVER_SYSTEM_PROMPT, policy=policy
+        )
+        if deps.llm is not None and allows_observations(policy)
+        else None
+    )
+    tool = CatalogQueryTool(
+        deps.catalog,
+        deps.prometheus,
+        agent=AgentName.SERVER,
+        budget=deps.tool_budget,
+        timeout_seconds=deps.settings.execution.tool_timeout_seconds,
+    )
+    return ServerAgent(tool, deps.settings.analysis, explainer)
+
+
+AGENT_BUILDERS: Mapping[AgentName, Callable[[AgentDeps], Agent]] = {
+    AgentName.SERVER: _build_server,
+}
+"""구현된 에이전트. 8단계 이후 Kubernetes·Service·DB·Network 에이전트를 여기에 추가합니다."""
 
 
 def build_context(
@@ -106,6 +146,12 @@ async def answer_question(
     use_llm: bool = True,
 ) -> AnswerBundle:
     current = now or utc_now()
+    started = time.monotonic()
+
+    def clock() -> datetime:
+        """요청 기준 시각에서 흐른 시간만큼 진행하는 시계 (마감 시각 판정용)."""
+        return current + timedelta(seconds=time.monotonic() - started)
+
     budgeted, notes = _prepare_llm(settings, llm, use_llm)
     default_range = parse_duration(settings.execution.default_time_range)
     override = parse_duration(range_override) if range_override else None
@@ -129,57 +175,29 @@ async def answer_question(
     if notes:
         interp = replace(interp, method_note="; ".join(notes))
     ctx = build_context(question, interp, settings, current, budgeted.max_calls if budgeted else 0)
-    policy = settings.llm.data_policy
-    explainer = (
-        AgentExplainer(
-            budgeted,
-            purpose="explain_server",
-            system_prompt=SERVER_SYSTEM_PROMPT,
-            policy=policy,
-        )
-        if budgeted is not None and allows_observations(policy)
-        else None
-    )
-    results: list[AgentResult] = []
-    if "server" in interp.domains:
-        task = AgentTask(
-            task_id="server-1",
-            agent=AgentName.SERVER,
-            objective="k3d 노드·Pod·컨테이너 자원 상태와 이상 징후 분석",
-        )
-        budget = ToolBudget(max_calls=settings.analysis.max_tool_calls)
+    plan = build_plan(interp.domains, AGENT_BUILDERS.keys())
+    report = None
+    if plan.tasks:
         async with PrometheusClient.from_config(
             settings.datasources.prometheus,
             max_retries=settings.execution.max_retries,
             transport=transport,
         ) as prom:
-            tool = CatalogQueryTool(
-                catalog,
-                prom,
-                agent=AgentName.SERVER,
-                budget=budget,
-                timeout_seconds=settings.execution.tool_timeout_seconds,
+            deps = AgentDeps(
+                settings=settings,
+                catalog=catalog,
+                prometheus=prom,
+                tool_budget=ToolBudget(max_calls=ctx.budget.max_tool_calls),
+                llm=budgeted,
             )
-            agent = ServerAgent(tool, settings.analysis, explainer)
-            try:
-                result = await asyncio.wait_for(
-                    agent.run(task, ctx, interp.targets),
-                    timeout=settings.execution.agent_timeout_seconds,
-                )
-            except TimeoutError:
-                result = AgentResult(
-                    task_id=task.task_id,
-                    agent=AgentName.SERVER,
-                    status=AgentStatus.FAILED,
-                    errors=(
-                        ErrorInfo(
-                            code="agent_timeout",
-                            message=f"에이전트 제한 시간"
-                            f"({settings.execution.agent_timeout_seconds:.0f}초) 초과",
-                        ),
-                    ),
-                )
-        results.append(result)
+            agents = {t.agent: AGENT_BUILDERS[t.agent](deps) for t in plan.tasks}
+            executor = Executor(
+                max_concurrency=settings.execution.max_concurrency,
+                agent_timeout_seconds=settings.execution.agent_timeout_seconds,
+                clock=clock,
+            )
+            report = await executor.run(plan, agents, ctx)
+    results = list(report.results) if report else []
     answer = synthesize(ctx.request_id, interp, results)
     return AnswerBundle(
         interp,
@@ -189,5 +207,7 @@ async def answer_question(
         llm_name=budgeted.name if budgeted else None,
         llm_calls=budgeted.calls if budgeted else 0,
         llm_cost_usd=budgeted.cost_usd if budgeted else 0.0,
-        data_policy=policy.value,
+        data_policy=settings.llm.data_policy.value,
+        plan=plan,
+        runs=report.runs if report else (),
     )
