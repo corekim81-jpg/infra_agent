@@ -4,8 +4,7 @@
 - `check`: 활성화된 데이터 소스(Prometheus, Loki, Tempo)의 연결 상태를 점검합니다.
 - `discover`: 지표·라벨·최신성을 탐색해 `var/discovery/`에 보고서를 저장합니다.
 - `catalog`: 조회 카탈로그 파일을 검증하고, `--execute` 시 각 조회를 Prometheus에 실행해 점검합니다.
-
-질문 응답 명령은 이후 단계에서 추가합니다.
+- `ask`: 질문에 답합니다. 현재는 모델 없이 Server Agent(k3d 노드·Pod·컨테이너 자원)만 동작합니다.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from infra_agent import __version__
+from infra_agent.answer.render import render_text
 from infra_agent.catalog import CatalogError, load_catalog
 from infra_agent.catalog.check import CheckStatus, ItemCheck, check_catalog
 from infra_agent.config import ConfigError, Settings, load_settings
@@ -25,6 +25,8 @@ from infra_agent.datasources.errors import DataSourceError
 from infra_agent.datasources.probe import SourceStatus, check_sources
 from infra_agent.datasources.prometheus import PrometheusClient
 from infra_agent.discovery import DiscoveryOptions, discover, write_report
+from infra_agent.orchestration.runner import answer_question
+from infra_agent.schemas import AgentStatus, TargetKind
 from infra_agent.security import configure_logging, redact
 from infra_agent.timeutil import parse_duration
 
@@ -83,6 +85,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--execute", action="store_true", help="각 조회를 Prometheus에 실행해 오류·빈 결과 확인"
     )
     cat.add_argument("--range", dest="range_", default="5m", help="범위 구간 값 (기본: 5m)")
+
+    ask = sub.add_parser("ask", help="질문에 답합니다 (현재: 모델 없이 Server Agent)")
+    _add_config_arg(ask)
+    ask.add_argument("question", help='질문 (예: "현재 서버 상태가 어때?")')
+    ask.add_argument("--range", dest="range_", default=None, help="분석 구간 (예: 30m, 1h)")
+    ask.add_argument("--namespace", default=None, help="대상 네임스페이스")
+    ask.add_argument("--node", default=None, help="대상 노드")
+    ask.add_argument("--pod", default=None, help="대상 Pod")
+    ask.add_argument("--json", action="store_true", help="답변을 JSON으로 출력")
+    ask.add_argument("--show-queries", action="store_true", help="근거에 실행한 조회식 표시")
     return parser
 
 
@@ -235,6 +247,54 @@ def _cmd_catalog(args: argparse.Namespace) -> int:
     return EXIT_UNAVAILABLE if failed else EXIT_OK
 
 
+def _cmd_ask(args: argparse.Namespace) -> int:
+    settings = _load(args.config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    if not settings.datasources.prometheus.enabled:
+        print("Prometheus가 비활성화되어 있어 답할 수 없습니다.", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    if not settings.catalog.path:
+        print("카탈로그 경로(catalog.path)가 설정되지 않았습니다.", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    try:
+        catalog = load_catalog(settings.catalog.path)
+        if args.range_:
+            parse_duration(args.range_)
+    except (CatalogError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    overrides: dict[TargetKind, str] = {}
+    for kind, value in (
+        (TargetKind.NAMESPACE, args.namespace),
+        (TargetKind.NODE, args.node),
+        (TargetKind.POD, args.pod),
+    ):
+        if value:
+            overrides[kind] = value
+    bundle = asyncio.run(
+        answer_question(
+            args.question,
+            settings,
+            catalog,
+            range_override=args.range_,
+            target_overrides=overrides,
+        )
+    )
+    if args.json:
+        payload = {
+            "request_id": bundle.context.request_id,
+            "intent": bundle.context.intent.value,
+            "assumptions": list(bundle.interpretation.assumptions),
+            "answer": bundle.answer.model_dump(mode="json"),
+        }
+        print(redact(json.dumps(payload, ensure_ascii=False, indent=2)))
+    else:
+        print(redact(render_text(bundle, show_queries=args.show_queries)))
+    failed = bundle.results and all(r.status is AgentStatus.FAILED for r in bundle.results)
+    return EXIT_UNAVAILABLE if failed else EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     configure_logging("WARNING")
@@ -246,6 +306,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_discover(args)
     if args.command == "catalog":
         return _cmd_catalog(args)
+    if args.command == "ask":
+        return _cmd_ask(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 

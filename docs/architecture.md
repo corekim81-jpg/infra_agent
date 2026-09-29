@@ -1,6 +1,6 @@
 # 아키텍처 설계
 
-> **상태: 설계 초안.** 공통 스키마(5절)·설정 모델(#5)과 데이터 접근 계층 일부(7절: Prometheus·Loki·Tempo 읽기 전용 클라이언트, 연결 점검, 조회 카탈로그 로더, #7)가 구현되었습니다. 도구 계층, 에이전트, 조정·모델 계층은 아직 구현되지 않았습니다.
+> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 모델 없이 동작하는 Server Agent·규칙 기반 질문 해석·결과 종합(3·4·6절, #11)이 구현되었습니다. 다른 분야 에이전트, 병렬 실행기, 모델 계층은 아직 구현되지 않았습니다.
 > 구현이 진행되면 각 절에 구현 상태를 표시하고, 설계와 달라진 부분을 이 문서에 반영합니다.
 > 기능 범위의 기준은 [README.md](../README.md)입니다.
 
@@ -68,6 +68,12 @@ flowchart TD
 | Service | 요청량, 오류율, 응답 시간(분위수), 서비스 간 호출·실패·지연, 로그 오류 패턴, 느린·실패 트레이스 | Prometheus `traces_spanmetrics_*`, `traces_service_graph_*`(Tempo metrics-generator), 서비스별 `http_*`·`rpc_*`; Loki; Tempo | `prom_*`, `loki_*`, `tempo_search`, `tempo_trace` |
 | Kubernetes | 노드 조건·압박, Pod phase·컨테이너 준비·재시작·OOM, 워크로드 복제 상태(Deployment·StatefulSet·DaemonSet·Job·HPA), 요청·제한, Pending 사유·이벤트 | Prometheus `k8s_*`(k8s_cluster 수집), `container_oom_events_total`; 이벤트(수집 위치 미확인); Kubernetes API는 읽기 계정 준비 후 | `prom_*`, `loki_*`, (이후) `k8s_list`, `k8s_get`, `k8s_events` |
 
+**Server Agent 구현 (#11, 모델 없이):** `agents/server.py`
+- 상태 조회: 노드 CPU·메모리·파일시스템 사용률, 컨테이너 CPU·메모리 limit 대비 사용률, CPU 스로틀링을 임계값(`analysis.utilization_warning/critical`, `throttling_warning`)으로 판정하고 노드 CPU·메모리 현재 값을 함께 제시
+- 비교·증가: 노드·Pod CPU·메모리의 분석 구간 평균을 같은 길이 직전 구간 평균과 비교(`increase_ratio`와 최소 증가량을 모두 넘을 때 증가로 판정)
+- 빈 결과는 한계로, 최신성을 확인하지 못했거나 오래된 데이터로는 "기준 미만"이라고 판정하지 않음. 요청 대상으로 필터링할 수 없는 항목은 조회하지 않고 한계로 표시
+- 카탈로그 조회 도구(`tools/catalog_query.py`)가 agent=server 항목만 실행하도록 강제
+
 범위 제한:
 
 - `node_*`, `kube_*` 지표는 개발 환경에서 확인되지 않았으므로 가정하지 않습니다.
@@ -107,6 +113,8 @@ sequenceDiagram
   - 기본값(제안): 명시가 없으면 최근 30분.
   - "직전 30분과 비교": 현재 구간 `[now-30m, now]`, 기준 구간 `[now-60m, now-30m]`.
 - 해석 결과는 답변에 명시해 사용자가 범위를 확인할 수 있게 합니다.
+
+> **현재 구현 (#11): 규칙 기반 해석** — `orchestration/rules.py`. 키워드·정규식으로 의도(비교·증가 키워드가 없으면 상태 조회), 시간("N분/시간/일", 없으면 `execution.default_time_range`, 최대 7일), 대상(하이픈·숫자가 있는 이름의 namespace/node/pod, CLI 옵션 우선), 분야를 판별합니다. 판별하지 못한 부분은 기본값을 쓰고 답변의 "가정"에 표시하며, 구현되지 않은 분야는 "확인하지 못한 영역"으로 답합니다. 모델 기반 해석(6단계)이 이를 보완합니다.
 
 ### 4.2 에이전트 선택 예시
 
@@ -216,6 +224,8 @@ DataSource (인터페이스)
 - 연결 주소, 인증정보, 모델 설정은 환경 변수 또는 마운트된 설정/Secret에서 읽습니다.
 
 ## 8. 실행 제어
+
+> **현재 구현 (#11):** 도구 호출별 제한 시간(`tool_timeout_seconds`), 에이전트 제한 시간(`agent_timeout_seconds`), 요청당 조회 호출 상한(`analysis.max_tool_calls`), 데이터 소스 일시 오류 재시도, 부분 실패 표시. 동시 실행 제어와 중복 조회 캐시는 병렬 실행기(7단계)에서 구현합니다.
 
 | 항목 | 설계 |
 | --- | --- |

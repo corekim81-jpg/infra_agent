@@ -158,7 +158,7 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 
 ## 설치 및 실행
 
-> 현재는 초기 구현 단계입니다. **질문 응답 기능은 아직 없으며**, 설정 검증, 데이터 소스 연결 점검, 지표 탐색, 조회 카탈로그 점검, 테스트를 실행할 수 있습니다.
+> 현재는 초기 구현 단계입니다. 질문 응답은 **모델 없이 동작하는 Server Agent(k3d 노드·Pod·컨테이너 자원)만** 지원합니다. 네트워크·DB·서비스·Kubernetes 상태 질문에는 "아직 분석하지 않음"으로 답합니다.
 
 요구 사항: Python 3.11 이상
 
@@ -182,6 +182,11 @@ infra-agent discover --config config/local.yaml
 # 조회 카탈로그 검증 / 각 조회를 Prometheus에 실행해 점검
 infra-agent catalog --config config/local.yaml --execute
 
+# 질문 응답 (모델 없이, Server Agent)
+infra-agent ask --config config/local.yaml "현재 서버 상태가 어때?"
+infra-agent ask --config config/local.yaml "최근 30분 동안 CPU나 메모리가 비정상적으로 증가한 서버가 있어?"
+#   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --show-queries  --json
+
 # 테스트
 python -m pytest -m "not live"
 ```
@@ -190,7 +195,7 @@ python -m pytest -m "not live"
 
 이후 단계에서 다음 항목을 추가합니다.
 
-- 질문 응답 CLI (전문 에이전트)
+- Kubernetes·Network·DB·Service 에이전트와 여러 에이전트의 병렬 실행
 - 모델 연결 설정
 - 컨테이너 실행 및 Kubernetes 배포 방법
 
