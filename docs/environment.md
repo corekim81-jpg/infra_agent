@@ -61,6 +61,9 @@
   - 제한 시간은 `tool_timeout_seconds <= agent_timeout_seconds <= request_timeout_seconds`여야 합니다.
   - `default_time_range`는 `30s`, `30m`, `1h`, `7d` 형식입니다.
 - 설정 파일이 없으면 안전한 기본값(`ci` 프로필, 데이터 소스 비활성, `fake` 모델, `data_policy: none`)을 사용합니다.
+- `llm` 섹션(#15): `provider`(`fake`=모델 없음, `claude_agent_sdk`), `model`(`null`이면 SDK 기본값), `data_policy`(`none`·`aggregated`·`full`, architecture.md 10.2절), `max_calls_per_request`(요청당 모델 호출 상한), `max_budget_usd_per_request`(SDK에 호출마다 전달하는 비용 상한). 예시 파일은 개발 환경 결정에 따라 `claude_agent_sdk`·`full`입니다. 운영 설정에는 그대로 쓰지 않습니다.
+  - SDK 설치: `python -m pip install -e ".[llm]"`. SDK는 Claude Code CLI를 실행하므로 CLI 인증(`ANTHROPIC_API_KEY` 또는 Claude Code 로그인)이 필요합니다.
+  - SDK가 없거나 CLI를 실행할 수 없으면 규칙 기반 경로로 계속하고 답변에 그 사실을 표시합니다. `ask --no-llm`으로 모델 없이 실행할 수 있습니다.
 - `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
 
 ### 2.4 환경 변수
@@ -72,7 +75,7 @@
 | `INFRA_AGENT__<SECTION>__<KEY>` | 설정 항목 덮어쓰기. `__`로 중첩 구분, 대소문자 무관, 값은 YAML 스칼라로 해석(`true`, `15`, `null`). 예: `INFRA_AGENT__DATASOURCES__PROMETHEUS__URL` | 아니오 | 구현됨 |
 | `token_env`로 지정한 변수 (예: `INFRA_AGENT_PROMETHEUS_TOKEN`) | 데이터 소스 인증이 필요해질 경우의 토큰 | 예 | 구현됨 (Bearer 헤더, 값은 마스킹 등록) |
 | `INFRA_AGENT_KUBECONFIG` (`kubeconfig_env` 기본값) | 전용 읽기 계정 kubeconfig 파일 경로 | 파일 내용은 비밀 | 설정 필드만 구현 |
-| `ANTHROPIC_API_KEY` | Claude Agent SDK 인증 (SDK가 직접 읽음, 프로그램은 값을 읽거나 기록하지 않음) | 예 | 6단계 |
+| `ANTHROPIC_API_KEY` | Claude Agent SDK 인증 (SDK가 직접 읽음, 프로그램은 값을 읽거나 기록하지 않음). Claude Code 로그인으로 대체 가능 | 예 | 구현됨 (#15) |
 | `INFRA_AGENT_LIVE_TESTS` | `1`일 때만 `live` 테스트 실행 | 아니오 | 구현됨 (`tests/conftest.py`) |
 
 ## 3. 데이터 소스별 사용 범위 (탐색 결과)
@@ -231,6 +234,7 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 | --- | --- | --- | --- |
 | 단위·계약 | 가상 응답(`tests/fixtures/synthetic/`) | CI, 로컬 | 항상 |
 | 개발 서버 연동 (`live` 마커) | 개발 서버 실제 데이터(읽기 전용) | Windows 호스트 + 터널 | `INFRA_AGENT_LIVE_TESTS=1`, `dev-tunnel` 프로필 |
+| 실제 모델 호출 (`live` 마커, `test_live_llm.py`) | 질문 문장·정책에 따른 조회 결과 | 사용자 환경 | 위 조건 + `.[llm]` 설치, SDK 인증, `llm.provider: claude_agent_sdk`. 과금 발생 가능 |
 
 - CI는 `pytest -m "not live"`만 실행합니다.
 - `live` 테스트: `tests/live/test_live_sources.py` (데이터 소스 준비 상태, Prometheus 기본 조회, 확인 지표 존재, 탐색 스모크). `INFRA_AGENT_CONFIG`가 없으면 건너뜁니다.
@@ -243,5 +247,5 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 | --- | --- |
 | SSH 터널 실행 (1.1절 포트) | 연동 테스트, 탐색 |
 | Kubernetes 전용 읽기 계정과 kubeconfig | Kubernetes API 연동 단계 |
-| Claude Agent SDK 인증 (`ANTHROPIC_API_KEY`) | 모델 연동 단계 |
-| 모델로 보낼 데이터 범위 결정 (`llm.data_policy`) | 실제 조회 데이터를 모델에 전달하기 전 |
+| Claude Agent SDK 인증 (`ANTHROPIC_API_KEY` 또는 Claude Code 로그인) | 모델 연동 단계 (6단계) |
+| 운영 환경의 모델 데이터 범위 결정 (`llm.data_policy`, 개발 환경은 `full`로 결정) | 운영 데이터를 모델에 전달하기 전 |

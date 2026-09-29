@@ -9,16 +9,21 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 import httpx
 
+from infra_agent.agents.explain import AgentExplainer
+from infra_agent.agents.prompts import SERVER_SYSTEM_PROMPT
 from infra_agent.agents.server import ServerAgent
 from infra_agent.answer.synthesis import synthesize
 from infra_agent.catalog import Catalog
 from infra_agent.config.settings import Settings
 from infra_agent.datasources.prometheus import PrometheusClient
+from infra_agent.llm import BudgetedLLM, LLMClient, LLMUnavailableError, make_llm
+from infra_agent.llm.policy import allows_observations
+from infra_agent.orchestration.llm_interpret import interpret_with_model
 from infra_agent.orchestration.rules import Interpretation, interpret
 from infra_agent.schemas import (
     AgentName,
@@ -42,10 +47,18 @@ class AnswerBundle:
     context: AnalysisContext
     results: tuple[AgentResult, ...]
     answer: FinalAnswer
+    llm_name: str | None = None
+    llm_calls: int = 0
+    llm_cost_usd: float = 0.0
+    data_policy: str = "none"
 
 
 def build_context(
-    question: str, interp: Interpretation, settings: Settings, now: datetime
+    question: str,
+    interp: Interpretation,
+    settings: Settings,
+    now: datetime,
+    max_llm_calls: int = 0,
 ) -> AnalysisContext:
     return AnalysisContext(
         request_id=uuid.uuid4().hex[:12],
@@ -55,12 +68,29 @@ def build_context(
         baseline_range=interp.baseline_range,
         targets=tuple(TargetRef(kind=k, name=v) for k, v in interp.targets.items()),
         budget=Budget(
-            # 이 흐름은 결정적 분석만 수행하며 모델을 호출하지 않습니다.
-            max_llm_calls=0,
+            max_llm_calls=max_llm_calls,
             max_tool_calls=settings.analysis.max_tool_calls,
             deadline=now + timedelta(seconds=settings.execution.request_timeout_seconds),
         ),
     )
+
+
+def _prepare_llm(
+    settings: Settings, llm: LLMClient | None, use_llm: bool
+) -> tuple[BudgetedLLM | None, list[str]]:
+    notes: list[str] = []
+    if not use_llm or settings.llm.max_calls_per_request == 0:
+        return None, notes
+    client = llm
+    if client is None:
+        try:
+            client = make_llm(settings)
+        except LLMUnavailableError as exc:
+            notes.append(f"모델을 사용할 수 없어({exc.message}) 규칙 기반으로 처리")
+            return None, notes
+    if client is None:
+        return None, notes
+    return BudgetedLLM(client, max_calls=settings.llm.max_calls_per_request), notes
 
 
 async def answer_question(
@@ -72,16 +102,44 @@ async def answer_question(
     target_overrides: Mapping[TargetKind, str] | None = None,
     now: datetime | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    llm: LLMClient | None = None,
+    use_llm: bool = True,
 ) -> AnswerBundle:
     current = now or utc_now()
-    interp = interpret(
-        question,
-        current,
-        parse_duration(settings.execution.default_time_range),
-        range_override=parse_duration(range_override) if range_override else None,
-        target_overrides=target_overrides,
+    budgeted, notes = _prepare_llm(settings, llm, use_llm)
+    default_range = parse_duration(settings.execution.default_time_range)
+    override = parse_duration(range_override) if range_override else None
+    if budgeted is not None:
+        interp = await interpret_with_model(
+            question,
+            budgeted,
+            current,
+            default_range,
+            range_override=override,
+            target_overrides=target_overrides,
+        )
+    else:
+        interp = interpret(
+            question,
+            current,
+            default_range,
+            range_override=override,
+            target_overrides=target_overrides,
+        )
+    if notes:
+        interp = replace(interp, assumptions=(*notes, *interp.assumptions))
+    ctx = build_context(question, interp, settings, current, budgeted.max_calls if budgeted else 0)
+    policy = settings.llm.data_policy
+    explainer = (
+        AgentExplainer(
+            budgeted,
+            purpose="explain_server",
+            system_prompt=SERVER_SYSTEM_PROMPT,
+            policy=policy,
+        )
+        if budgeted is not None and allows_observations(policy)
+        else None
     )
-    ctx = build_context(question, interp, settings, current)
     results: list[AgentResult] = []
     if "server" in interp.domains:
         task = AgentTask(
@@ -102,7 +160,7 @@ async def answer_question(
                 budget=budget,
                 timeout_seconds=settings.execution.tool_timeout_seconds,
             )
-            agent = ServerAgent(tool, settings.analysis)
+            agent = ServerAgent(tool, settings.analysis, explainer)
             try:
                 result = await asyncio.wait_for(
                     agent.run(task, ctx, interp.targets),
@@ -123,4 +181,13 @@ async def answer_question(
                 )
         results.append(result)
     answer = synthesize(ctx.request_id, interp, results)
-    return AnswerBundle(interp, ctx, tuple(results), answer)
+    return AnswerBundle(
+        interp,
+        ctx,
+        tuple(results),
+        answer,
+        llm_name=budgeted.name if budgeted else None,
+        llm_calls=budgeted.calls if budgeted else 0,
+        llm_cost_usd=budgeted.cost_usd if budgeted else 0.0,
+        data_policy=policy.value,
+    )

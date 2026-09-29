@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.formatting import entity_of, fmt_delta, fmt_value, row_key
 from infra_agent.config.settings import AnalysisConfig
 from infra_agent.schemas import (
@@ -126,9 +127,15 @@ class _Collector:
 class ServerAgent:
     name = AgentName.SERVER
 
-    def __init__(self, tool: CatalogQueryTool, analysis: AnalysisConfig) -> None:
+    def __init__(
+        self,
+        tool: CatalogQueryTool,
+        analysis: AnalysisConfig,
+        explainer: AgentExplainer | None = None,
+    ) -> None:
         self._tool = tool
         self._cfg = analysis
+        self._explainer = explainer
 
     async def run(
         self, task: AgentTask, ctx: AnalysisContext, targets: Mapping[TargetKind, str]
@@ -152,7 +159,7 @@ class ServerAgent:
             status = AgentStatus.PARTIAL
         if status is not AgentStatus.SUCCESS and not col.errors:
             col.errors.append(ErrorInfo(code="partial", message="일부 조회를 완료하지 못함"))
-        return AgentResult(
+        result = AgentResult(
             task_id=task.task_id,
             agent=self.name,
             status=status,
@@ -162,6 +169,18 @@ class ServerAgent:
             next_checks=tuple(col.next_checks),
             errors=tuple(col.errors),
             usage=Usage(tool_calls=col.queries),
+        )
+        if self._explainer is None or not self._explainer.needed(result):
+            return result
+        # 모델 해석: 원인 후보(추정)와 추가 확인만 덧붙이고, 코드 판정(사실)은 그대로 둡니다.
+        extra = await self._explainer.explain(result, ctx)
+        return result.model_copy(
+            update={
+                "findings": result.findings + tuple(extra.hypotheses),
+                "limitations": result.limitations + tuple(extra.limitations),
+                "next_checks": result.next_checks + tuple(extra.next_checks),
+                "usage": Usage(tool_calls=col.queries, llm_calls=extra.llm_calls),
+            }
         )
 
     # ------------------------------------------------------------------ 공통

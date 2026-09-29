@@ -4,7 +4,8 @@
 - `check`: 활성화된 데이터 소스(Prometheus, Loki, Tempo)의 연결 상태를 점검합니다.
 - `discover`: 지표·라벨·최신성을 탐색해 `var/discovery/`에 보고서를 저장합니다.
 - `catalog`: 조회 카탈로그 파일을 검증하고, `--execute` 시 각 조회를 Prometheus에 실행해 점검합니다.
-- `ask`: 질문에 답합니다. 현재는 모델 없이 Server Agent(k3d 노드·Pod·컨테이너 자원)만 동작합니다.
+- `ask`: 질문에 답합니다. 현재 Server Agent(k3d 노드·Pod·컨테이너 자원)만 동작하며,
+  설정에 따라 모델로 질문 해석·원인 후보를 보완합니다(`--no-llm`으로 끌 수 있음).
 """
 
 from __future__ import annotations
@@ -95,6 +96,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--pod", default=None, help="대상 Pod")
     ask.add_argument("--json", action="store_true", help="답변을 JSON으로 출력")
     ask.add_argument("--show-queries", action="store_true", help="근거에 실행한 조회식 표시")
+    ask.add_argument(
+        "--no-llm", action="store_true", help="모델을 호출하지 않고 규칙·코드 판정만 사용"
+    )
     return parser
 
 
@@ -279,6 +283,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             catalog,
             range_override=args.range_,
             target_overrides=overrides,
+            use_llm=not args.no_llm,
         )
     )
     if args.json:
@@ -286,6 +291,11 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             "request_id": bundle.context.request_id,
             "intent": bundle.context.intent.value,
             "assumptions": list(bundle.interpretation.assumptions),
+            "llm": {
+                "provider": bundle.llm_name,
+                "calls": bundle.llm_calls,
+                "data_policy": bundle.data_policy,
+            },
             "answer": bundle.answer.model_dump(mode="json"),
         }
         print(redact(json.dumps(payload, ensure_ascii=False, indent=2)))

@@ -61,10 +61,11 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
             lines.append(f"- {f.statement}")
     if answer.hypotheses:
         lines.append("")
-        lines.append("[원인 후보 (추정)]")
+        lines.append("[원인 후보 (추정, 모델 해석)]")
         for f in answer.hypotheses:
             conf = f.confidence.value if f.confidence else "-"
-            lines.append(f"- {f.statement} (신뢰도 {conf})")
+            refs = ", ".join(f.evidence_ids)
+            lines.append(f"- {f.statement} (신뢰도 {conf}, 근거 {refs})")
 
     lines.append("")
     lines.append("[근거]")
@@ -97,5 +98,11 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.extend(f"- {x}" for x in answer.next_checks)
     lines.append("")
     calls = sum(r.usage.tool_calls for r in bundle.results)
-    lines.append(f"(요청 ID {ctx.request_id}, 모델 호출 없음, 분석 조회 {calls}회)")
+    if bundle.llm_calls:
+        model = (
+            f"모델 호출 {bundle.llm_calls}회({bundle.llm_name}, data_policy={bundle.data_policy})"
+        )
+    else:
+        model = "모델 호출 없음"
+    lines.append(f"(요청 ID {ctx.request_id}, {model}, 분석 조회 {calls}회)")
     return "\n".join(lines)

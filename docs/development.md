@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 5단계 완료, 6단계 준비.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11)이 있습니다.
-> 에이전트·모델 연동·질문 응답은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 6단계 진행 중 (#15).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15)이 있습니다.
+> Server 외 분야 에이전트와 병렬 실행기는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -17,7 +17,7 @@
 | 테스트 | `pytest`, `pytest-asyncio` | 도입됨 |
 | HTTP 목 | `respx`, `httpx.MockTransport`(가상 백엔드 `tests/fakes.py`) | 도입됨 |
 | CI | GitHub Actions `.github/workflows/ci.yml` | 도입됨 |
-| 모델 SDK | `claude-agent-sdk` (1차 어댑터, [architecture.md](architecture.md) 10.1절) | 미도입 |
+| 모델 SDK | `claude-agent-sdk` (1차 어댑터, 선택 의존성 `pip install -e ".[llm]"`, [architecture.md](architecture.md) 10.1절) | 도입됨 (선택, CI는 미설치·가짜 SDK로 검증) |
 
 검증 명령:
 
@@ -72,7 +72,7 @@ infra_agent/
 │  ├─ tools/                    # 읽기 전용 도구 정의, 에이전트별 허용 목록
 │  ├─ analysis/                 # 기준 구간 비교, 임계값 판정 등 결정적 분석
 │  ├─ agents/                   # coordinator, server, network, db, service, kubernetes
-│  │  └─ prompts/               # 역할별 지침
+│  │  └─ prompts.py             # 역할별 지침
 │  ├─ orchestration/            # 실행 계획(DAG), 실행기, 예산·타임아웃
 │  ├─ answer/                   # 결과 종합, 근거 검증, 답변 렌더링
 │  └─ interfaces/               # cli, (이후) http api
@@ -141,7 +141,7 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 3 | Prometheus 조회와 탐색 | Prometheus 클라이언트, 가용성 점검, `discover` 명령, 카탈로그 로더 | 가상 응답 테스트 통과, 개발 서버 탐색 보고서 생성(live) | 2 | 완료 (#7, PR #8; 개발 서버 탐색·live 4건 통과 2026-09-29) |
 | 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 완료 (#9, PR #10; 실행 점검 오류 0, live 7건 통과) |
 | 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 완료 (#11, PR #12; 개발 서버 `ask` 실행·live 9건 통과 2026-09-29) |
-| 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 계획 |
+| 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 진행 중 (#15; 실제 모델 live 테스트는 사용자 환경에서 확인 필요) |
 | 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 계획 |
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 계획 |
 | 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트, 권한 점검, `k8s_*` 도구 | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 계획 |
@@ -151,7 +151,7 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 12 | 교차 분석과 품질 평가 | Service → (Network ∥ DB) 흐름, 결과 종합, README 대표 질문 평가 세트 | 대표 질문 7개 평가 기록 | 8–11 | 계획 |
 | 13 | 배포·확장 | Containerfile(Rocky Linux 9), Kubernetes 배포·RBAC, MCP 경로, HTTP API | 클러스터 내부 읽기 전용 실행 확인 | 12 | 계획 |
 
-8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 데이터 정책이 결정된 뒤에만 사용합니다.
+8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 개발 환경(OTel Demo)에서만 `full`로 결정되었습니다(2026-09-29). 운영 환경의 정책은 결정 전까지 `none`을 사용합니다.
 
 ## 7. Issue·PR 절차
 

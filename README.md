@@ -158,7 +158,8 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 
 ## 설치 및 실행
 
-> 현재는 초기 구현 단계입니다. 질문 응답은 **모델 없이 동작하는 Server Agent(k3d 노드·Pod·컨테이너 자원)만** 지원합니다. 네트워크·DB·서비스·Kubernetes 상태 질문에는 "아직 분석하지 않음"으로 답합니다.
+> 현재는 초기 구현 단계입니다. 질문 응답은 **Server Agent(k3d 노드·Pod·컨테이너 자원)만** 지원합니다. 네트워크·DB·서비스·Kubernetes 상태 질문에는 "아직 분석하지 않음"으로 답합니다.
+> 수치 판정은 항상 코드가 합니다. 모델(Claude Agent SDK, 선택)을 설정하면 질문 해석과 원인 후보(추정) 제안에 사용하며, 모델은 도구를 쓸 수 없습니다. 모델이 없거나 실패하면 규칙 기반으로 답합니다.
 
 요구 사항: Python 3.11 이상
 
@@ -166,6 +167,7 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 # 가상환경 (Linux: source .venv/bin/activate / Windows PowerShell: .venv\Scripts\Activate.ps1)
 python -m venv .venv
 python -m pip install -e ".[dev]"
+python -m pip install -e ".[llm]"   # 선택: 모델 사용 시 (Claude Agent SDK, 인증 필요)
 
 # 설정 준비: 예시를 복사해 수정 (config/local.yaml은 Git에서 제외됨)
 cp config/example.yaml config/local.yaml        # Windows: copy config\example.yaml config\local.yaml
@@ -182,10 +184,10 @@ infra-agent discover --config config/local.yaml
 # 조회 카탈로그 검증 / 각 조회를 Prometheus에 실행해 점검
 infra-agent catalog --config config/local.yaml --execute
 
-# 질문 응답 (모델 없이, Server Agent)
+# 질문 응답 (Server Agent). llm.provider가 claude_agent_sdk면 모델 사용, --no-llm이면 모델 없이
 infra-agent ask --config config/local.yaml "현재 서버 상태가 어때?"
 infra-agent ask --config config/local.yaml "최근 30분 동안 CPU나 메모리가 비정상적으로 증가한 서버가 있어?"
-#   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --show-queries  --json
+#   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --show-queries  --json  --no-llm
 
 # 테스트
 python -m pytest -m "not live"
@@ -196,7 +198,6 @@ python -m pytest -m "not live"
 이후 단계에서 다음 항목을 추가합니다.
 
 - Kubernetes·Network·DB·Service 에이전트와 여러 에이전트의 병렬 실행
-- 모델 연결 설정
 - 컨테이너 실행 및 Kubernetes 배포 방법
 
 ## 테스트 및 품질 평가
