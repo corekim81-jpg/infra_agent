@@ -1,0 +1,77 @@
+{
+  "synthetic": true,
+  "description": "가상 테스트 데이터. 개발 환경의 지표 이름 구조를 본떴지만 값·라벨 값은 모두 가상입니다.",
+  "prometheus": {
+    "version": "3.0.0-synthetic",
+    "storage_retention": "15d",
+    "metrics": {
+      "k8s_node_cpu_usage": {
+        "type": "gauge", "unit": "", "help": "synthetic node cpu",
+        "labels": ["__name__", "k8s_node_name", "job"],
+        "series": 3,
+        "sample": [{"k8s_node_name": "k3d-synthetic-server-0", "job": "otel"}]
+      },
+      "k8s_node_memory_working_set_bytes": {
+        "type": "gauge", "unit": "bytes", "help": "synthetic node memory",
+        "labels": ["__name__", "k8s_node_name"], "series": 3,
+        "sample": [{"k8s_node_name": "k3d-synthetic-agent-0"}]
+      },
+      "container_memory_working_set_bytes": {
+        "type": "gauge", "unit": "bytes", "help": "synthetic container memory",
+        "labels": ["__name__", "container", "namespace", "pod", "instance"], "series": 40,
+        "sample": [{"container": "cart", "namespace": "otel-demo", "pod": "cart-synthetic", "instance": "10.42.0.7:10250"}]
+      },
+      "k8s_container_restarts": {
+        "type": "gauge", "unit": "", "help": "synthetic restarts",
+        "labels": ["__name__", "k8s_container_name", "k8s_namespace_name", "k8s_pod_name"], "series": 25,
+        "sample": [{"k8s_container_name": "cart", "k8s_namespace_name": "otel-demo", "k8s_pod_name": "cart-synthetic"}]
+      },
+      "hubble_drop_total": {
+        "type": "counter", "unit": "", "help": "synthetic drops",
+        "labels": ["__name__", "reason", "protocol"], "series": 2,
+        "sample": [{"reason": "POLICY_DENIED", "protocol": "TCP"}]
+      },
+      "postgresql_backends": {
+        "type": "gauge", "unit": "", "help": "synthetic backends",
+        "labels": ["__name__", "postgresql_database_name"], "series": 1,
+        "sample": [{"postgresql_database_name": "otel"}]
+      },
+      "db_client_operation_duration_seconds_bucket": {
+        "type": "histogram", "unit": "seconds", "help": "synthetic db op duration",
+        "labels": ["__name__", "le", "db_system", "service_name"], "series": 12,
+        "sample": [{"le": "0.1", "db_system": "postgresql", "service_name": "accounting"}]
+      },
+      "db_client_operation_duration_seconds_sum": {"type": "histogram", "labels": [], "series": 1, "sample": []},
+      "db_client_operation_duration_seconds_count": {"type": "histogram", "labels": [], "series": 1, "sample": []},
+      "system_cpu_time_seconds_total": {
+        "type": "counter", "unit": "seconds", "help": "synthetic system cpu",
+        "labels": ["__name__", "cpu", "state", "host_name"], "series": 16,
+        "sample": [{"cpu": "cpu0", "state": "user", "host_name": "synthetic-host"}]
+      },
+      "stale_metric_example": {
+        "type": "gauge", "unit": "", "help": "synthetic series with no current data",
+        "labels": ["__name__"], "series": 0, "sample": []
+      },
+      "app_frontend_requests_total": {
+        "type": "counter", "unit": "", "help": "synthetic app metric (not an interest family)",
+        "labels": ["__name__", "status"], "series": 2,
+        "sample": [{"status": "200"}]
+      }
+    }
+  },
+  "loki": {
+    "version": "3.4.0-synthetic",
+    "labels": {
+      "k8s_namespace_name": ["otel-demo", "kube-system"],
+      "service_name": ["cart", "checkout", "frontend"],
+      "host_ip": ["10.42.0.5"]
+    }
+  },
+  "tempo": {
+    "version": "2.7.0-synthetic",
+    "scopes": {
+      "resource": ["service.name", "k8s.namespace.name"],
+      "span": ["db.system", "http.response.status_code"]
+    }
+  }
+}

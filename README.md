@@ -158,7 +158,7 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 
 ## 설치 및 실행
 
-> 현재는 프로젝트 골격 단계입니다. **질문 응답 기능은 아직 없으며**, 설정 검증과 단위 테스트만 실행할 수 있습니다.
+> 현재는 초기 구현 단계입니다. **질문 응답 기능은 아직 없으며**, 설정 검증, 데이터 소스 연결 점검, 지표 탐색, 테스트를 실행할 수 있습니다.
 
 요구 사항: Python 3.11 이상
 
@@ -173,6 +173,12 @@ cp config/example.yaml config/local.yaml        # Windows: copy config\example.y
 # 적용될 설정 검증·출력
 infra-agent config --config config/local.yaml
 
+# 데이터 소스(Prometheus·Loki·Tempo) 연결 점검 — 개발 환경은 SSH 터널 필요
+infra-agent check --config config/local.yaml
+
+# 지표·라벨·최신성 탐색 → var/discovery/ 에 보고서 저장 (실제 데이터 포함, 커밋 금지)
+infra-agent discover --config config/local.yaml
+
 # 테스트
 python -m pytest -m "not live"
 ```
@@ -181,8 +187,7 @@ python -m pytest -m "not live"
 
 이후 단계에서 다음 항목을 추가합니다.
 
-- 데이터 소스 연결 점검과 지표 탐색
-- 질문 응답 CLI
+- 조회 카탈로그와 질문 응답 CLI
 - 모델 연결 설정
 - 컨테이너 실행 및 Kubernetes 배포 방법
 

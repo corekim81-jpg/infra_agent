@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 dependencies = [
+    "httpx>=0.27,<1",
     "pydantic>=2.6,<3",
     "PyYAML>=6.0",
 ]
@@ -18,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "respx>=0.21",
     "ruff>=0.6",
     "mypy>=1.10",
     "types-PyYAML>=6.0",
@@ -31,6 +33,7 @@ packages = ["src/infra_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "live: 개발 서버 실제 데이터 소스에 연결하는 테스트 (INFRA_AGENT_LIVE_TESTS=1 필요)",
