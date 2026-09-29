@@ -1,6 +1,6 @@
 # 아키텍처 설계
 
-> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 모델 없이 동작하는 Server Agent·규칙 기반 질문 해석·결과 종합(3·4·6절, #11)이 구현되었습니다. 다른 분야 에이전트, 병렬 실행기, 모델 계층은 아직 구현되지 않았습니다.
+> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15)이 구현되었습니다. 다른 분야 에이전트와 병렬 실행기는 아직 구현되지 않았습니다.
 > 구현이 진행되면 각 절에 구현 상태를 표시하고, 설계와 달라진 부분을 이 문서에 반영합니다.
 > 기능 범위의 기준은 [README.md](../README.md)입니다.
 
@@ -68,7 +68,7 @@ flowchart TD
 | Service | 요청량, 오류율, 응답 시간(분위수), 서비스 간 호출·실패·지연, 로그 오류 패턴, 느린·실패 트레이스 | Prometheus `traces_spanmetrics_*`, `traces_service_graph_*`(Tempo metrics-generator), 서비스별 `http_*`·`rpc_*`; Loki; Tempo | `prom_*`, `loki_*`, `tempo_search`, `tempo_trace` |
 | Kubernetes | 노드 조건·압박, Pod phase·컨테이너 준비·재시작·OOM, 워크로드 복제 상태(Deployment·StatefulSet·DaemonSet·Job·HPA), 요청·제한, Pending 사유·이벤트 | Prometheus `k8s_*`(k8s_cluster 수집), `container_oom_events_total`; 이벤트(수집 위치 미확인); Kubernetes API는 읽기 계정 준비 후 | `prom_*`, `loki_*`, (이후) `k8s_list`, `k8s_get`, `k8s_events` |
 
-**Server Agent 구현 (#11, 모델 없이):** `agents/server.py`
+**Server Agent 구현 (#11, 모델 해석 #15):** `agents/server.py` — 판정은 코드, 원인 후보·추가 확인 제안은 모델(10.1절, `data_policy`가 none이 아니고 경고·심각이 있을 때)
 - 상태 조회: 노드 CPU·메모리·파일시스템 사용률, 컨테이너 CPU·메모리 limit 대비 사용률, CPU 스로틀링을 임계값(`analysis.utilization_warning/critical`, `throttling_warning`)으로 판정하고 노드 CPU·메모리 현재 값을 함께 제시
 - 비교·증가: 노드·Pod CPU·메모리의 분석 구간 평균을 같은 길이 직전 구간 평균과 비교(`increase_ratio`와 최소 증가량을 모두 넘을 때 증가로 판정)
 - 빈 결과는 한계로, 최신성을 확인하지 못했거나 오래된 데이터로는 "기준 미만"이라고 판정하지 않음. 요청 대상으로 필터링할 수 없는 항목은 조회하지 않고 한계로 표시
@@ -114,7 +114,8 @@ sequenceDiagram
   - "직전 30분과 비교": 현재 구간 `[now-30m, now]`, 기준 구간 `[now-60m, now-30m]`.
 - 해석 결과는 답변에 명시해 사용자가 범위를 확인할 수 있게 합니다.
 
-> **현재 구현 (#11): 규칙 기반 해석** — `orchestration/rules.py`. 키워드·정규식으로 의도(비교·증가 키워드가 없으면 상태 조회), 시간("N분/시간/일", 없으면 `execution.default_time_range`, 최대 7일), 대상(하이픈·숫자가 있는 이름의 namespace/node/pod, CLI 옵션 우선), 분야를 판별합니다. 판별하지 못한 부분은 기본값을 쓰고 답변의 "가정"에 표시하며, 구현되지 않은 분야는 "확인하지 못한 영역"으로 답합니다. 모델 기반 해석(6단계)이 이를 보완합니다.
+> **현재 구현 (#11): 규칙 기반 해석** — `orchestration/rules.py`. 키워드·정규식으로 의도(비교·증가 키워드가 없으면 상태 조회), 시간("N분/시간/일", 없으면 `execution.default_time_range`, 최대 7일), 대상(하이픈·숫자가 있는 이름의 namespace/node/pod, CLI 옵션 우선), 분야를 판별합니다. 판별하지 못한 부분은 기본값을 쓰고 답변의 "가정"에 표시하며, 구현되지 않은 분야는 "확인하지 못한 영역"으로 답합니다. 
+> **모델 기반 해석 (#15):** 모델을 쓸 수 있으면 `orchestration/llm_interpret.py`가 질문을 구조화하고(질문 문장만 전송), 결과는 규칙 기반과 같은 `finalize()`로 검증·보정합니다. 모델 호출·검증이 실패하면 규칙 기반 해석으로 대체하고 답변의 "가정"에 사유를 표시합니다.
 
 ### 4.2 에이전트 선택 예시
 
@@ -185,6 +186,7 @@ AgentResult
   task_id, agent, status: success|partial|failed|skipped
   findings, evidence: [ToolResult]   # findings의 evidence_ids는 evidence에 존재해야 함
   limitations, next_checks, errors: [{code, message}], usage: {llm_calls, tool_calls, elapsed_ms}
+  rejected_hypotheses: [{statement, evidence_ids, reasons}]   # 검증 실패로 제외한 모델 원인 후보(진단용, 답변 본문 제외)
   # 규칙: failed에는 findings 금지, failed/partial에는 errors 또는 limitations 필수
 
 FinalAnswer
@@ -249,43 +251,48 @@ DataSource (인터페이스)
 
 ### 10.1 모델 연동: Claude Agent SDK (1차 어댑터)
 
-**결정:** 첫 번째 모델 어댑터는 Claude Agent SDK(Python 패키지 `claude-agent-sdk`)로 구현합니다.
-**미확정 유지:** 최종 모델 제공자, 사용할 모델, 운영 데이터를 외부 모델 API로 보내도 되는지는 결정되지 않았습니다(10.2절, 11절). 따라서 SDK는 `LLMClient` 인터페이스 뒤에 두고, 다른 제공자나 자체 호스팅 모델로 교체할 수 있게 합니다.
+**결정:** 첫 번째 모델 어댑터는 Claude Agent SDK(Python 패키지 `claude-agent-sdk`, 선택 의존성 `.[llm]`)입니다.
+**미확정 유지:** 최종 모델 제공자와 사용할 모델은 결정되지 않았습니다. 코드는 `LLMClient` 인터페이스(`llm/base.py`)에만 의존하며 다른 제공자로 교체할 수 있습니다.
 
-사용 방식(설계):
+> **구현됨 (#15):** `llm/` — `LLMClient`, 요청당 호출 상한(`BudgetedLLM`), 가짜 모델(테스트), `ClaudeAgentSDKClient`, 데이터 정책(`llm/policy.py`)
 
-| 용도 | SDK 사용 방법 |
-| --- | --- |
-| 질문 해석 (Coordinator) | 도구 없이 호출, `output_format`(JSON Schema)으로 구조화 출력 |
-| 결과 해석 (전문 에이전트) | 도구 없이 호출, 결정적 분석 결과를 입력으로 주고 구조화 출력 |
-| 도구 사용 분석 (선택) | 에이전트별 in-process MCP 서버(`create_sdk_mcp_server`)에 **그 에이전트의 읽기 전용 도구만** 등록하고 `max_turns`로 제한 |
+모델의 역할(현재 구현):
 
-에이전트마다 **별도의 SDK 호출(세션)**과 별도의 시스템 지침, 도구 목록을 사용합니다. 오케스트레이션은 자체 실행기(10.3절)가 하며 SDK의 서브에이전트 기능에 맡기지 않습니다.
+| 용도 | 담당 | 모델 입력 | 출력 검증 |
+| --- | --- | --- | --- |
+| 질문 해석 | Coordinator (`orchestration/llm_interpret.py`) | 질문 문장만 | JSON Schema + Pydantic 검증, 대상 이름 형식 검사, 규칙 기반과 같은 보정(`finalize`). 실패 시 규칙 기반 해석으로 대체. 답변의 "해석 방식"(모델/규칙 기반과 그 이유)으로 표시하며 가정과 섞지 않음 |
+| 원인 후보·추가 확인 제안 | 전문 에이전트별 (`agents/explain.py`, 지침 `agents/prompts.py`) | 해당 에이전트의 판정·근거(`data_policy` 범위) | 근거 ID가 그 에이전트의 실제 근거인지, 문장 속 수치가 관측 데이터에 같은 값으로 있는지(독립된 수치끼리 값 비교, 이름 안의 숫자·계산값은 불인정), confidence ≤ medium. 실패한 후보는 제외하고 한계에 이유별 건수 표시, 원문과 이유는 `rejected_hypotheses`(`ask --show-queries`, `--json`)로 확인. 추가 확인 제안은 코드가 낸 항목을 모델에 알려 주고, 겹치는 제안(정규화 후 동일·포함)은 제외하며 최대 3개 |
 
-SDK는 코딩 에이전트용 내장 도구(파일 읽기·쓰기, 셸 실행 등)와 사용자·프로젝트 설정 파일 로딩 기능을 갖고 있으므로, 다음 제한을 **필수**로 적용합니다.
+- **사실(Finding kind=fact)은 코드 판정만** 사용합니다. 모델은 원인 후보(kind=hypothesis, basis=correlation)와 추가 확인 제안만 덧붙이며 요약·판정을 바꾸지 않습니다.
+- 에이전트마다 별도 호출과 별도 지침을 씁니다(현재 Server Agent 지침). 공통 지침에 실제 에이전트 이름과 담당 범위를 적어, 다른 분야는 그 이름으로만 언급하게 합니다. 모델 해석은 경고·심각 판정이 있을 때만 호출합니다.
+- 원인 후보는 여러 관측값을 연결한 해석이어야 하며, 판정된 이상 징후를 반복하거나 위험만 설명하는 문장은 지침에서 금지합니다(위험 확인은 추가 확인으로). 이 구분은 지침으로만 유도하므로 개발 서버 결과로 계속 확인합니다.
+- 도구 사용 분석(모델이 조회 도구를 직접 호출하는 방식)은 채택하지 않았습니다. 조회는 항상 코드의 도구 계층이 수행합니다.
 
-- 내장 도구 비활성화(`tools`로 빈 목록 또는 허용 도구만 지정), 쓰기·실행 계열 도구는 `disallowed_tools`에도 명시
-- `allowed_tools`는 해당 에이전트의 `mcp__<server>__<tool>` 이름만
-- `setting_sources=[]`, `strict_mcp_config=True`로 로컬 설정·외부 MCP 설정을 불러오지 않음
-- `can_use_tool` 콜백으로 허용 목록 밖의 도구 호출을 거부 (이중 방어)
-- `max_turns`, `max_budget_usd`로 호출 예산 제한
-- 도구 정의에 `readOnlyHint=True` 표시, 결과 크기 제한
+SDK 제한(항상 적용, `llm/claude_sdk.py`):
 
-위 옵션 이름은 SDK 문서 기준이며, 구현 시 설치한 SDK 버전에서 **내장 도구가 실제로 비활성화되는지 테스트로 확인**합니다. 인증은 SDK가 `ANTHROPIC_API_KEY` 등으로 직접 처리하며, 프로그램은 키 값을 읽거나 기록하지 않습니다.
+- 내장 도구 비활성화 `tools=[]`(CLI `--tools ""`), `allowed_tools=[]`, 파일·셸·웹 도구 이름을 `disallowed_tools`에 명시
+- `can_use_tool` 권한 콜백이 도구 사용 요청을 거부하고, 응답에 도구 사용 블록이 있으면 결과를 버림(`LLMPolicyViolationError`)
+  - 예외: CLI가 구조화 출력을 전달하는 내부 이름 `StructuredOutput`만 출력으로 받아들임(외부 작용 없음, 2026-09-29 확인)
+- `setting_sources=[]`, `strict_mcp_config=True`, `mcp_servers={}`, 빈 임시 디렉터리를 작업 디렉터리로 사용
+- `max_turns` 3, `max_budget_usd`(호출당, `llm.max_budget_usd_per_request`), 호출 제한 시간(`agent_timeout_seconds`)
+- 인증(`ANTHROPIC_API_KEY` 또는 Claude Code 로그인)은 SDK/CLI가 처리하며 프로그램은 인증정보를 읽거나 기록하지 않음
 
-### 10.2 모델 입력 데이터 정책 (미확정)
+검증: 가짜 SDK로 옵션·차단 동작 단위 테스트, 설치된 실제 SDK의 `ClaudeAgentOptions`로 옵션 이름 확인. 실제 모델 호출(도구 차단, 질문 해석, `ask`)은 사용자 환경 live 테스트(`tests/live/test_live_llm.py`)로 확인합니다.
 
-운영 데이터를 외부 모델 API로 보내도 되는지는 결정되지 않았습니다. 설정 `llm.data_policy`로 모델에 전달할 수 있는 범위를 제한합니다.
+### 10.2 모델 입력 데이터 정책
 
-| 값 | 모델에 전달되는 것 | 전달되지 않는 것 |
+**결정(2026-09-29, 사용자): 개발 환경(OTel Demo)은 `data_policy: full`.** 운영 환경의 외부 모델 전송 허용 범위는 **미확정**이며, 설정 파일이 없을 때의 기본값은 계속 `none`입니다.
+
+| 값 | 모델에 전달되는 것 (현재 구현) | 전달되지 않는 것 |
 | --- | --- | --- |
-| `none` (결정 전 기본값) | 질문, 의도 해석용 스키마 | 모든 조회 결과. 에이전트는 결정적 분석만 수행하고 답변은 템플릿으로 생성 |
-| `aggregated` | 집계 수치, 지표·라벨 이름, 대상 식별자, 판정 결과 | 로그 원문, 트레이스 속성 값, 이벤트 메시지 원문 |
-| `full` | 마스킹을 거친 로그·트레이스·이벤트 발췌 포함 | 비밀값 패턴(마스킹) |
+| `none` | 질문 문장(질문 해석) | 모든 조회 결과. 에이전트 모델 해석을 호출하지 않음 |
+| `aggregated` | + 판정 결과, 근거 요약(상태·결과 수·최신성·구간), 결과 행의 대상 식별 라벨과 값(근거당 상위 20) | 조회식, 대상 외 라벨, 로그·트레이스 원문 |
+| `full` | + 결과 행의 전체 라벨, 실행한 조회식. 로그·트레이스 발췌는 해당 에이전트(9단계) 구현 시 추가 | 비밀값 패턴(마스킹) |
 
-- 이 정책은 도구 계층과 모델 어댑터에서 **코드로 강제**합니다. `none`에서는 도구 사용 분석 모드를 비활성화합니다.
-- 질문 문장 자체도 모델로 전송된다는 점을 문서와 CLI 안내에 표시합니다.
-- 가상 데이터(CI)는 정책과 무관하게 가짜 모델만 사용합니다.
+- 정책은 코드로 강제합니다(`llm/policy.py`에서만 모델 입력을 만듦). 모든 관측 데이터는 마스킹 후 `<observed_data>`로 격리하고, 지침에서 그 안의 문장을 지시로 따르지 않도록 명시합니다.
+- 질문 문장은 모든 정책에서 모델로 전송됩니다(`--no-llm`이면 전송하지 않음).
+- Tempo span에는 SQL 원문(`db.statement` 등)이 있으므로 9단계에서 `full`로 트레이스 발췌를 보낼 때 마스킹 범위를 다시 검토합니다.
+- CI는 가짜 모델만 사용합니다.
 
 ### 10.3 에이전트 조정 방식
 
@@ -313,8 +320,8 @@ SDK는 코딩 에이전트용 내장 도구(파일 읽기·쓰기, 셸 실행 �
 
 | 항목 | 현재 상태 | 영향 | 결정·확인 시점 |
 | --- | --- | --- | --- |
-| 최종 모델 제공자·모델 | 1차 어댑터는 Claude Agent SDK, 최종 미정 | 모델 계층 | 운영 적용 전 |
-| 운영 데이터의 외부 모델 전송 허용 범위 | 미정 (기본 `data_policy: none`). Tempo span에 SQL 원문(`db.statement` 등)이 있음 | 에이전트 해석 방식, 보안 | 실제 조회 데이터를 모델에 전달하기 전 |
+| 최종 모델 제공자·모델 | 1차 어댑터 Claude Agent SDK 구현됨(#15), 최종 미정 | 모델 계층 | 운영 적용 전 |
+| **운영 환경**의 외부 모델 전송 허용 범위 | 미정 (개발 환경은 `full`로 결정, 기본값 `none`). Tempo span에 SQL 원문이 있음 | 에이전트 해석 방식, 보안 | 운영 적용 전 |
 | 라벨 값 의미 (`k8s_pod_phase`, 노드 조건, spanmetrics `status_code`·`span_kind`, 커넥션 상태) | 가정 (카탈로그 caveats) | 판정 정확도 | 각 에이전트 구현 시 값 검토 |
 | `k8s_pod_cpu_usage`, spanmetrics 지연 단위 | 가정 (cores, seconds). 노드·컨테이너 CPU는 cores로 검증됨 | 수치 해석 | 해당 에이전트 구현 시 |
 | Kubernetes 이벤트 저장 위치 (Loki 여부) | 미확인 | Kubernetes Agent | 8단계 |

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from infra_agent.orchestration.rules import Interpretation
 from infra_agent.orchestration.runner import AnswerBundle
 from infra_agent.schemas import Intent, Severity, TimeRange
 
@@ -26,6 +27,12 @@ def _range(tr: TimeRange) -> str:
     return f"{_t(tr.start)} ~ {_t(tr.end)}"
 
 
+def _method(interp: Interpretation) -> str:
+    if interp.method == "model":
+        return "모델"
+    return f"규칙 기반 ({interp.method_note})" if interp.method_note else "규칙 기반"
+
+
 def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
     interp, ctx, answer = bundle.interpretation, bundle.context, bundle.answer
     lines: list[str] = []
@@ -41,6 +48,7 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append(f"- 기준 구간: {_range(ctx.baseline_range)}")
     targets = ", ".join(f"{t.kind.value}={t.name}" for t in ctx.targets) or "전체"
     lines.append(f"- 대상: {targets}")
+    lines.append(f"- 해석 방식: {_method(interp)}")
     for a in interp.assumptions:
         lines.append(f"- 가정: {a}")
     lines.append("")
@@ -61,10 +69,11 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
             lines.append(f"- {f.statement}")
     if answer.hypotheses:
         lines.append("")
-        lines.append("[원인 후보 (추정)]")
+        lines.append("[원인 후보 (추정, 모델 해석)]")
         for f in answer.hypotheses:
             conf = f.confidence.value if f.confidence else "-"
-            lines.append(f"- {f.statement} (신뢰도 {conf})")
+            refs = ", ".join(f.evidence_ids)
+            lines.append(f"- {f.statement} (신뢰도 {conf}, 근거 {refs})")
 
     lines.append("")
     lines.append("[근거]")
@@ -95,7 +104,21 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append("")
         lines.append("[추가 확인]")
         lines.extend(f"- {x}" for x in answer.next_checks)
+    rejected = [(r.agent.value, x) for r in bundle.results for x in r.rejected_hypotheses]
+    if show_queries and rejected:
+        lines.append("")
+        lines.append("[제외된 원인 후보 (검증 실패, 진단용)]")
+        for agent, x in rejected:
+            ids = ", ".join(x.evidence_ids) or "(없음)"
+            lines.append(f"- ({agent}) {x.statement}")
+            lines.append(f"    근거 {ids} / 제외 이유: {'; '.join(x.reasons)}")
     lines.append("")
     calls = sum(r.usage.tool_calls for r in bundle.results)
-    lines.append(f"(요청 ID {ctx.request_id}, 모델 호출 없음, 분석 조회 {calls}회)")
+    if bundle.llm_calls:
+        model = (
+            f"모델 호출 {bundle.llm_calls}회({bundle.llm_name}, data_policy={bundle.data_policy})"
+        )
+    else:
+        model = "모델 호출 없음"
+    lines.append(f"(요청 ID {ctx.request_id}, {model}, 분석 조회 {calls}회)")
     return "\n".join(lines)

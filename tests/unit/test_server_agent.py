@@ -262,3 +262,120 @@ async def test_anomaly_summary_answers_increase_first() -> None:
     status_text = render_text(status)
     assert "- 조회 시각:" in status_text and "현재 값 기준" in status_text
     assert "- 분석 구간:" not in status_text
+
+
+async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
+    from infra_agent.llm import LLMUnavailableError
+    from infra_agent.llm.fake import FakeLLM
+    from infra_agent.orchestration.llm_interpret import PURPOSE
+
+    env = {
+        "INFRA_AGENT_PROFILE": "dev-tunnel",
+        "INFRA_AGENT__DATASOURCES__PROMETHEUS__ENABLED": "true",
+        "INFRA_AGENT__DATASOURCES__PROMETHEUS__URL": "http://prom.synthetic.test",
+        "INFRA_AGENT__LLM__PROVIDER": "claude_agent_sdk",
+        "INFRA_AGENT__LLM__DATA_POLICY": "full",
+    }
+    settings = load_settings(environ=env)
+    ctx = _ctx(Intent.STATUS)
+    fake_prom = ExprProm()
+    _status_prom(ctx, fake_prom)
+    llm = FakeLLM(
+        {
+            PURPOSE: {
+                "intent": "status",
+                "duration_minutes": None,
+                "namespace": None,
+                "node": None,
+                "pod": None,
+                "domains": ["server"],
+            },
+            "explain_server": {
+                "hypotheses": [
+                    {
+                        "statement": (
+                            "k3d-syn-2 노드 CPU 사용률 95.0%는 해당 노드 Pod 부하 증가 가능성"
+                        ),
+                        "evidence_ids": ["node.cpu_utilization@current"],
+                        "confidence": "low",
+                    },
+                    {
+                        "statement": "노드 CPU가 417분째 증가 중",
+                        "evidence_ids": ["node.cpu_utilization@current"],
+                        "confidence": "low",
+                    },
+                ],
+                "next_checks": [],
+            },
+        }
+    )
+    bundle = await answer_question(
+        "현재 서버 상태가 어때?",
+        settings,
+        CATALOG,
+        now=NOW,
+        transport=fake_prom.transport(),
+        llm=llm,
+    )
+    assert bundle.llm_calls == 2 and bundle.data_policy == "full"
+    assert [r.purpose for r in llm.requests] == [PURPOSE, "explain_server"]
+    assert bundle.context.budget.max_llm_calls == settings.llm.max_calls_per_request
+    assert len(bundle.answer.hypotheses) == 1
+    # 코드 판정(사실)은 모델과 무관하게 유지
+    assert "기준을 넘는 이상 징후 2건(심각 1건, 경고 1건)" in bundle.answer.summary
+    text = render_text(bundle)
+    assert "[원인 후보 (추정, 모델 해석)]" in text
+    assert "모델 호출 2회(fake, data_policy=full)" in text
+    assert "- 해석 방식: 모델" in text and "가정: 질문 해석" not in text
+    # 제외된 원인 후보: 본문에는 없고 진단 출력(--show-queries)에만 원문·이유 표시
+    assert "417분째" not in text and "[제외된 원인 후보" not in text
+    diag = render_text(bundle, show_queries=True)
+    assert "[제외된 원인 후보 (검증 실패, 진단용)]" in diag
+    assert "- (server) 노드 CPU가 417분째 증가 중" in diag
+    assert "제외 이유: 관측 데이터에 없는 수치: 417" in diag
+    # 조회 데이터가 모델 입력에 포함됨(full)
+    assert "k8s_node_cpu_usage" in llm.requests[1].prompt
+
+    # --no-llm: 모델을 호출하지 않음
+    off = await answer_question(
+        "현재 서버 상태가 어때?",
+        settings,
+        CATALOG,
+        now=NOW,
+        transport=fake_prom.transport(),
+        llm=llm,
+        use_llm=False,
+    )
+    assert off.llm_calls == 0 and not off.answer.hypotheses
+    assert "모델 호출 없음" in render_text(off)
+    assert off.interpretation.method == "rules" and "- 해석 방식: 규칙 기반\n" in render_text(off)
+
+    # data_policy=none: 질문 해석만 모델, 조회 데이터는 보내지 않음
+    none_settings = load_settings(environ={**env, "INFRA_AGENT__LLM__DATA_POLICY": "none"})
+    llm.requests.clear()
+    only_q = await answer_question(
+        "현재 서버 상태가 어때?",
+        none_settings,
+        CATALOG,
+        now=NOW,
+        transport=fake_prom.transport(),
+        llm=llm,
+    )
+    assert [r.purpose for r in llm.requests] == [PURPOSE] and only_q.llm_calls == 1
+
+    # SDK를 쓸 수 없으면 규칙 기반으로 계속하고 해석 방식에 이유를 표시
+    import infra_agent.orchestration.runner as runner_mod
+
+    def unavailable(_: object) -> None:
+        raise LLMUnavailableError("claude-agent-sdk가 설치되지 않았습니다")
+
+    monkeypatch.setattr(runner_mod, "make_llm", unavailable)  # type: ignore[attr-defined]
+    fallback = await answer_question(
+        "현재 서버 상태가 어때?", settings, CATALOG, now=NOW, transport=fake_prom.transport()
+    )
+    assert fallback.llm_calls == 0
+    assert fallback.interpretation.method == "rules"
+    assert fallback.interpretation.method_note == (
+        "모델 사용 불가: claude-agent-sdk가 설치되지 않았습니다"
+    )
+    assert "- 해석 방식: 규칙 기반 (모델 사용 불가: claude-agent-sdk" in render_text(fallback)

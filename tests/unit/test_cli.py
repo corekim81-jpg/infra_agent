@@ -23,7 +23,7 @@ def test_config_command_prints_settings(capsys: pytest.CaptureFixture[str]) -> N
     assert main(["config", "--config", str(EXAMPLE)]) == EXIT_OK
     data = json.loads(capsys.readouterr().out)
     assert data["profile"] == "dev-tunnel"
-    assert data["llm"]["data_policy"] == "none"
+    assert data["llm"]["data_policy"] == "full"
 
 
 def test_config_command_reports_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

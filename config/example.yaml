@@ -29,9 +29,12 @@ catalog:
   path: config/catalog/otel-demo.yaml   # 실행 위치(저장소 루트) 기준 상대 경로
 
 llm:
-  provider: fake             # fake | claude_agent_sdk (모델 연동은 6단계 예정)
-  model: null
-  data_policy: none          # none | aggregated | full — 결정 전 기본값 none
+  # fake: 모델 없음(규칙·코드 판정만) / claude_agent_sdk: pip install -e ".[llm]" 와 인증 필요
+  provider: claude_agent_sdk
+  model: null                # null이면 SDK 기본 모델
+  # none | aggregated | full. 개발 환경(OTel Demo)은 full로 결정(2026-09-29).
+  # 운영 환경의 외부 모델 전송 범위는 미확정이므로 운영 설정에 이 값을 그대로 쓰지 마세요.
+  data_policy: full
   max_calls_per_request: 8
   max_turns_per_agent: 6
   max_budget_usd_per_request: null

@@ -31,7 +31,8 @@ def test_example_config_loads() -> None:
     assert s.datasources.prometheus.url == "http://127.0.0.1:19090"
     assert s.datasources.loki.url == "http://127.0.0.1:13100"
     assert s.datasources.tempo.url == "http://127.0.0.1:13200"
-    assert s.llm.data_policy is DataPolicy.NONE
+    assert s.llm.data_policy is DataPolicy.FULL  # 개발 환경 결정 (운영 미확정)
+    assert s.llm.provider is LLMProvider.CLAUDE_AGENT_SDK
     assert s.execution.default_time_range == "30m"
 
 

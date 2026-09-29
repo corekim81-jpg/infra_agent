@@ -4,7 +4,8 @@
 - 판별하지 못한 부분은 추측으로 채우지 않고 `assumptions`에 기본값 사용 사실을 남깁니다.
 - 아직 구현되지 않은 분야는 `unsupported_domains`로 돌려주어
   답변의 "확인하지 못한 영역"에 표시합니다.
-모델 기반 해석은 6단계 이후 이 모듈을 대체하거나 보완합니다.
+모델 기반 해석(`llm_interpret`)도 `finalize()`로 같은 검증·보정을 거치며,
+모델 해석이 실패하면 이 모듈로 대체합니다.
 """
 
 from __future__ import annotations
@@ -13,8 +14,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 
 from infra_agent.schemas import Intent, TargetKind, TimeRange
+
+InterpretMethod = Literal["rules", "model"]
 
 MAX_RANGE = timedelta(days=7)
 """개발 환경 Prometheus 보존 기간(1w) 기준 최대 조회 구간."""
@@ -140,6 +144,10 @@ class Interpretation:
     domains: frozenset[str]
     unsupported_domains: frozenset[str]
     assumptions: tuple[str, ...] = field(default_factory=tuple)
+    method: InterpretMethod = "rules"
+    """질문 해석 방식. 가정(assumptions)과 구분해 표시합니다."""
+    method_note: str | None = None
+    """규칙 기반으로 처리한 이유 (모델 사용 불가, 모델 해석 실패 등)."""
 
 
 def _duration(text: str) -> timedelta | None:
@@ -151,6 +159,66 @@ def _duration(text: str) -> timedelta | None:
     return timedelta(seconds=amount * unit) if amount > 0 else None
 
 
+KNOWN_DOMAINS = frozenset(DOMAIN_KEYWORDS)
+TARGET_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
+
+
+def finalize(
+    *,
+    intent: Intent,
+    duration: timedelta | None,
+    targets: Mapping[TargetKind, str],
+    domains: set[str],
+    now: datetime,
+    default_range: timedelta,
+    range_override: timedelta | None = None,
+    target_overrides: Mapping[TargetKind, str] | None = None,
+    assumptions: list[str] | None = None,
+    method: InterpretMethod = "rules",
+) -> Interpretation:
+    """해석 결과를 공통 규칙(기본 구간, 보존 기간 제한, 옵션 우선)으로 확정합니다.
+
+    규칙 기반 해석과 모델 기반 해석이 같은 검증·보정 경로를 사용합니다.
+    """
+    notes = list(assumptions or [])
+    duration = range_override or duration
+    if duration is None:
+        duration = default_range
+        if intent is not Intent.STATUS:  # 상태 조회는 현재 값만 쓰므로 구간 가정을 표시하지 않음
+            minutes = int(duration.total_seconds() // 60)
+            notes.append(f"시간 범위가 없어 최근 {minutes}분으로 해석")
+    if duration > MAX_RANGE:
+        duration = MAX_RANGE
+        notes.append("데이터 보존 기간(7일)을 넘는 범위는 최근 7일로 줄여 해석")
+    time_range = TimeRange.last(duration, now)
+    baseline: TimeRange | None = None
+    if intent in (Intent.COMPARE, Intent.ANOMALY):
+        baseline = time_range.previous()
+        if now - baseline.start > MAX_RANGE:
+            baseline = None
+            intent = Intent.STATUS
+            notes.append("기준 구간이 보존 기간을 넘어 비교 없이 상태 조회로 해석")
+
+    final_targets = {k: v for k, v in targets.items() if TARGET_NAME_RE.match(v)}
+    if target_overrides:
+        final_targets.update(target_overrides)
+
+    final_domains = {d for d in domains if d in KNOWN_DOMAINS}
+    if not final_domains:
+        final_domains = {"server"}
+        notes.append("질문 분야를 특정하지 못해 서버(노드·Pod·컨테이너) 자원 상태로 해석")
+    return Interpretation(
+        intent=intent,
+        time_range=time_range,
+        baseline_range=baseline,
+        targets=final_targets,
+        domains=frozenset(final_domains),
+        unsupported_domains=frozenset(final_domains - IMPLEMENTED_DOMAINS),
+        assumptions=tuple(notes),
+        method=method,
+    )
+
+
 def interpret(
     question: str,
     now: datetime,
@@ -159,52 +227,27 @@ def interpret(
     range_override: timedelta | None = None,
     target_overrides: Mapping[TargetKind, str] | None = None,
 ) -> Interpretation:
+    """키워드·정규식 기반 해석."""
     text = question.lower()
-    assumptions: list[str] = []
-
     if any(k in text for k in COMPARE_KEYWORDS):
         intent = Intent.COMPARE
     elif any(k in text for k in ANOMALY_KEYWORDS):
         intent = Intent.ANOMALY
     else:
         intent = Intent.STATUS
-
-    duration = range_override or _duration(text)
-    if duration is None:
-        duration = default_range
-        if intent is not Intent.STATUS:  # 상태 조회는 현재 값만 쓰므로 구간 가정을 표시하지 않음
-            minutes = int(duration.total_seconds() // 60)
-            assumptions.append(f"시간 범위가 없어 최근 {minutes}분으로 해석")
-    if duration > MAX_RANGE:
-        duration = MAX_RANGE
-        assumptions.append("데이터 보존 기간(7일)을 넘는 범위는 최근 7일로 줄여 해석")
-    time_range = TimeRange.last(duration, now)
-    baseline: TimeRange | None = None
-    if intent in (Intent.COMPARE, Intent.ANOMALY):
-        baseline = time_range.previous()
-        if now - baseline.start > MAX_RANGE:
-            baseline = None
-            intent = Intent.STATUS
-            assumptions.append("기준 구간이 보존 기간을 넘어 비교 없이 상태 조회로 해석")
-
     targets: dict[TargetKind, str] = {}
     for kind, pattern in _TARGET_PATTERNS.items():
         match = pattern.search(text)
         if match:
             targets[kind] = match.group(1)
-    if target_overrides:
-        targets.update(target_overrides)
-
     domains = {d for d, words in DOMAIN_KEYWORDS.items() if any(w in text for w in words)}
-    if not domains:
-        domains = {"server"}
-        assumptions.append("질문 분야를 특정하지 못해 서버(노드·Pod·컨테이너) 자원 상태로 해석")
-    return Interpretation(
+    return finalize(
         intent=intent,
-        time_range=time_range,
-        baseline_range=baseline,
+        duration=_duration(text),
         targets=targets,
-        domains=frozenset(domains),
-        unsupported_domains=frozenset(domains - IMPLEMENTED_DOMAINS),
-        assumptions=tuple(assumptions),
+        domains=domains,
+        now=now,
+        default_range=default_range,
+        range_override=range_override,
+        target_overrides=target_overrides,
     )
