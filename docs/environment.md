@@ -216,7 +216,11 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 ```
 
   "결과 없음"은 오류가 아닙니다(예: 재시작이 없으면 `k8s.container_restarts_increase`는 비어 있음). "지표 없음"과 "오류"가 있으면 종료 코드 1을 반환합니다.
-- 조회식 문법은 로컬 Prometheus 3.5(빈 데이터)에서 53개 항목 × selector 유무 106건을 실행해 오류가 없음을 확인했습니다. 실제 데이터에서의 결과는 사용자 환경의 `--execute`·live 테스트로 확인합니다.
+- 조회식 문법은 로컬 Prometheus 3.5(빈 데이터)에서 53개 항목 × selector 유무 106건을 실행해 오류가 없음을 확인했습니다.
+- **개발 서버 실행 점검(2026-09-29):** 정상 43, 결과 없음 10, 지표 없음 0, 오류 0.
+  - 결과 없음 10건은 모두 "문제가 있을 때만 결과가 나오는" 조건형 조회입니다(`k8s.container_restarts_increase`, `k8s.container_oom_events`, `k8s.pod_phase`, `k8s.node_not_ready`, `k8s.node_pressure`, `k8s.deployment_unavailable`, `k8s.statefulset_unready`, `k8s.daemonset_unready`, `k8s.job_failed_pods`, `k8s.hpa_at_max`).
+  - `network.tcp_flags_rate`가 워크로드 단위 집계에서 시계열 1.4만 개를 반환해 네임스페이스 단위로 줄였습니다.
+- **조건형 조회 해석 규칙(에이전트 구현 시 적용):** 결과가 비어 있으면 "조건에 해당하는 대상 없음"으로 판단할 수 있는 것은 필요한 지표가 존재하고 최신 데이터가 있을 때뿐입니다. 이를 확인하지 못했으면 "확인 불가"로 답합니다.
 - `verified`로 올리는 기준: `--execute` 결과 확인 + caveats에 적은 단위·값 의미를 실제 값으로 검토.
 
 ## 5. 테스트 구분

@@ -330,15 +330,17 @@ items:
   network.tcp_flags_rate:
     agent: network
     source: prometheus
-    description: TCP 플래그별 증가율 (RST 등 비정상 연결 종료 확인용)
+    description: TCP 플래그별 증가율 (RST 등 비정상 연결 종료 확인용, 네임스페이스 단위)
     unit: packets/s
     query: >-
-      sum by (flag, source_workload, destination_namespace, destination_workload)
+      sum by (flag, source_namespace, destination_namespace)
       (rate(hubble_tcp_flags_total{{{selector}}}[{range}]))
     requires_metrics: [hubble_tcp_flags_total]
     target_labels: *hubble_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-    caveats: [flag 라벨 값(RST, SYN 등)은 값 검토 필요]
+    caveats:
+      - flag 라벨 값(RST, SYN 등)은 값 검토 필요
+      - "원 지표 시계열이 매우 많음(탐색 시 약 1.8만). 워크로드별로 묶으면 실행 점검에서 1.4만 개가 나와 네임스페이스 단위로 집계함. 워크로드 단위는 대상 필터와 함께 조회"
   network.dns_query_rate:
     agent: network
     source: prometheus
