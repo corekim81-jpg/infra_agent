@@ -1,6 +1,6 @@
 # 환경 및 설정 설계
 
-> **상태: 설계.** 설정 로딩, 탐색 명령, 조회 카탈로그 파일, 연동 테스트는 아직 구현되지 않았습니다.
+> **상태: 일부 구현.** 설정 로딩(2절)과 `live` 테스트 구분(5절)은 구현되었습니다(#5). 탐색 명령, 조회 카탈로그 파일, 실제 연동 테스트는 아직 구현되지 않았습니다.
 > 이 문서의 지표 목록은 **사용자가 개발 환경에서 조회를 확인한 지표 이름**이며, 라벨 구조·단위·의미·수집 범위는 탐색 단계에서 검증해야 합니다.
 > 시스템 구성은 [architecture.md](architecture.md), 개발 절차는 [development.md](development.md)를 기준으로 합니다.
 
@@ -47,60 +47,32 @@
 | `dev-tunnel` | Windows 호스트 + SSH 터널로 개발 서버 연동 | 1.1절 로컬 주소 | 설정에 따름 |
 | `in-cluster` | (향후) Kubernetes 내부 실행 | 클러스터 서비스 DNS | 설정에 따름 |
 
-### 2.3 설정 파일 예시 (초안)
+### 2.3 설정 파일
 
-```yaml
-# config/example.yaml — 비밀값·내부 주소 없음
-profile: dev-tunnel
+> **구현됨 (#5):** 설정 모델은 `src/infra_agent/config/settings.py`, 로더는 `src/infra_agent/config/loader.py`입니다.
 
-datasources:
-  prometheus:
-    url: http://127.0.0.1:19090
-    timeout_seconds: 15
-  loki:
-    url: http://127.0.0.1:13100
-    timeout_seconds: 20
-  tempo:
-    url: http://127.0.0.1:13200
-    timeout_seconds: 20
-  kubernetes:
-    enabled: false                    # 전용 읽기 계정 준비 후 true
-    kubeconfig_env: INFRA_AGENT_KUBECONFIG   # kubeconfig "경로"를 담은 환경 변수 이름
-    context: null
-  hubble:
-    enabled: false                    # Hubble Relay 직접 조회는 미확인. 초기에는 Prometheus의 hubble_* 지표 사용
+- 예시 파일: [`config/example.yaml`](../config/example.yaml) (비밀값·내부 주소 없음). 이 파일을 `config/local.yaml`로 복사해 사용합니다(`config/local.yaml`은 Git 제외).
+- 설정 확인: `infra-agent config --config config/local.yaml` — 적용될 설정을 검증하고 JSON으로 출력합니다. 오류가 있으면 항목 위치와 이유를 출력하고 종료 코드 2를 반환합니다.
+- 검증 규칙(주요):
+  - 정의되지 않은 키는 오류로 처리합니다(오타 방지).
+  - `enabled: true`인 HTTP 데이터 소스는 `url`이 필요하며, URL에 사용자 정보(`user:pass@`)를 넣으면 거부합니다.
+  - `token_env`, `kubeconfig_env`에는 비밀값이 아니라 **환경 변수 이름**(대문자·숫자·`_`)만 허용합니다.
+  - `ci` 프로필에서는 `llm.provider: fake`만 허용합니다.
+  - 제한 시간은 `tool_timeout_seconds <= agent_timeout_seconds <= request_timeout_seconds`여야 합니다.
+  - `default_time_range`는 `30s`, `30m`, `1h`, `7d` 형식입니다.
+- 설정 파일이 없으면 안전한 기본값(`ci` 프로필, 데이터 소스 비활성, `fake` 모델, `data_policy: none`)을 사용합니다.
 
-catalog:
-  path: config/catalog/otel-demo.yaml
+### 2.4 환경 변수
 
-llm:
-  provider: claude_agent_sdk          # claude_agent_sdk | fake
-  model: null                         # null이면 SDK 기본값. 모델 선택은 미확정
-  data_policy: none                   # none | aggregated | full — 결정 전 기본값은 none (architecture.md 10.2)
-  max_calls_per_request: 8
-  max_turns_per_agent: 6
-  max_budget_usd_per_request: null
-
-execution:
-  max_concurrency: 4
-  request_timeout_seconds: 120
-  agent_timeout_seconds: 60
-  tool_timeout_seconds: 20
-  max_retries: 2
-  default_time_range: 30m
-```
-
-### 2.4 환경 변수 (초안)
-
-| 변수 | 용도 | 비밀 여부 |
-| --- | --- | --- |
-| `INFRA_AGENT_CONFIG` | 설정 파일 경로 | 아니오 |
-| `INFRA_AGENT_PROFILE` | 프로필 선택 | 아니오 |
-| `INFRA_AGENT__DATASOURCES__PROMETHEUS__URL` 등 | 설정 항목 덮어쓰기 (`__`로 중첩 구분) | 아니오 |
-| `INFRA_AGENT_KUBECONFIG` | 전용 읽기 계정 kubeconfig 파일 경로 | 파일 내용은 비밀 |
-| `INFRA_AGENT_PROMETHEUS_TOKEN` 등 | 데이터 소스 인증이 필요해질 경우 | 예 |
-| `ANTHROPIC_API_KEY` | Claude Agent SDK 인증 (SDK가 직접 읽음, 프로그램은 값을 읽거나 기록하지 않음) | 예 |
-| `INFRA_AGENT_LIVE_TESTS` | `1`일 때만 개발 서버 연동 테스트 실행 | 아니오 |
+| 변수 | 용도 | 비밀 여부 | 상태 |
+| --- | --- | --- | --- |
+| `INFRA_AGENT_CONFIG` | 설정 파일 경로 | 아니오 | 구현됨 |
+| `INFRA_AGENT_PROFILE` | 프로필 덮어쓰기 | 아니오 | 구현됨 |
+| `INFRA_AGENT__<SECTION>__<KEY>` | 설정 항목 덮어쓰기. `__`로 중첩 구분, 대소문자 무관, 값은 YAML 스칼라로 해석(`true`, `15`, `null`). 예: `INFRA_AGENT__DATASOURCES__PROMETHEUS__URL` | 아니오 | 구현됨 |
+| `token_env`로 지정한 변수 (예: `INFRA_AGENT_PROMETHEUS_TOKEN`) | 데이터 소스 인증이 필요해질 경우의 토큰 | 예 | 설정 필드만 구현, 사용은 3단계 |
+| `INFRA_AGENT_KUBECONFIG` (`kubeconfig_env` 기본값) | 전용 읽기 계정 kubeconfig 파일 경로 | 파일 내용은 비밀 | 설정 필드만 구현 |
+| `ANTHROPIC_API_KEY` | Claude Agent SDK 인증 (SDK가 직접 읽음, 프로그램은 값을 읽거나 기록하지 않음) | 예 | 6단계 |
+| `INFRA_AGENT_LIVE_TESTS` | `1`일 때만 `live` 테스트 실행 | 아니오 | 구현됨 (`tests/conftest.py`) |
 
 ## 3. 데이터 소스별 초기 사용 범위
 
@@ -197,6 +169,7 @@ items:
 | 개발 서버 연동 (`live` 마커) | 개발 서버 실제 데이터(읽기 전용) | Windows 호스트 + 터널 | `INFRA_AGENT_LIVE_TESTS=1`, `dev-tunnel` 프로필 |
 
 - CI는 `pytest -m "not live"`만 실행합니다.
+- 현재는 `live` 마커와 자동 건너뛰기(`tests/conftest.py`)만 구현되어 있고, 실제 `live` 테스트는 아직 없습니다(3단계에서 추가).
 - 연동 테스트는 특정 값을 기대하지 않고 형식·존재·최신성을 검증합니다. 결과 원문은 저장소에 남기지 않습니다.
 - 가상 fixture는 탐색 결과의 **구조**(지표·라벨 이름)를 본떠 만들되, 값은 가상임을 표시합니다(`synthetic: true`).
 

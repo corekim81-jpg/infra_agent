@@ -14,14 +14,24 @@ Python 기반 멀티 에이전트 인프라 운영 분석 시스템(infra_agent)
 
 ## 현재 상태
 
-- 설계·초기 개발 단계입니다. 저장소에는 문서만 있고 애플리케이션 코드, 의존성 정의, 테스트, CI는 **아직 없습니다**.
+- 프로젝트 골격 단계입니다. 설정 로딩(`src/infra_agent/config`), 공통 스키마(`schemas`), 비밀값 마스킹(`security`), 설정 확인 CLI(`infra-agent config`), 단위 테스트, CI가 있습니다. 데이터 소스 클라이언트, 에이전트, 모델 연동, 질문 응답 기능은 **아직 없습니다**. 진행 단계는 development.md 6절을 봅니다.
 - 1차 모델 어댑터는 Claude Agent SDK이며, 최종 모델 제공자와 운영 데이터의 외부 모델 전송 허용 범위는 **미확정**입니다 (architecture.md 10–11절). 결정 전 기본값은 모델에 조회 데이터를 보내지 않는 `data_policy: none`입니다.
 - 개발 환경은 OTel Demo(k3d) 서버이며 Windows 호스트에서 SSH 터널로 접속합니다. 지표 이름(`node_*`, `kube_*` 등)을 가정하지 말고 탐색으로 확인한 조회 카탈로그를 사용합니다 (environment.md).
 
 ## 검증 명령
 
-현재 실행 가능한 자동 검증 명령은 없습니다. 문서 변경은 링크, README.md와의 일관성, 비밀값 미포함 여부를 수동 검토합니다.
-도구가 도입되면 이 절을 실제 명령으로 갱신합니다 (제안 명령은 development.md 1절).
+코드 변경 시 PR 전에 모두 통과해야 합니다 (CI와 동일):
+
+```bash
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy
+python -m pytest -m "not live"
+```
+
+`live` 테스트는 개발 서버 SSH 터널이 필요하므로 CI와 이 작업 환경에서는 실행하지 않습니다. 실행하지 못한 검증은 PR에 명시합니다.
+문서 변경은 링크, README.md와의 일관성, 비밀값·내부 주소 미포함 여부를 함께 검토합니다. 환경 준비와 명령 상세는 development.md 1절을 따릅니다.
 
 ## 핵심 규칙
 

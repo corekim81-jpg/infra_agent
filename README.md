@@ -158,14 +158,32 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 
 ## 설치 및 실행
 
-초기 개발 단계로 설치 및 실행 명령은 아직 확정되지 않았습니다.
+> 현재는 프로젝트 골격 단계입니다. **질문 응답 기능은 아직 없으며**, 설정 검증과 단위 테스트만 실행할 수 있습니다.
 
-구현 완료 후 다음 항목을 제공합니다.
+요구 사항: Python 3.11 이상
 
-- Python 및 시스템 의존성
-- 데이터 소스와 모델 연결 설정
-- 비밀값이 없는 환경 설정 예시
-- 로컬 실행 및 테스트 방법
+```bash
+# 가상환경 (Linux: source .venv/bin/activate / Windows PowerShell: .venv\Scripts\Activate.ps1)
+python -m venv .venv
+python -m pip install -e ".[dev]"
+
+# 설정 준비: 예시를 복사해 수정 (config/local.yaml은 Git에서 제외됨)
+cp config/example.yaml config/local.yaml        # Windows: copy config\example.yaml config\local.yaml
+
+# 적용될 설정 검증·출력
+infra-agent config --config config/local.yaml
+
+# 테스트
+python -m pytest -m "not live"
+```
+
+설정 구조와 환경 변수는 [docs/environment.md](docs/environment.md), 개발 명령은 [docs/development.md](docs/development.md)를 참고합니다.
+
+이후 단계에서 다음 항목을 추가합니다.
+
+- 데이터 소스 연결 점검과 지표 탐색
+- 질문 응답 CLI
+- 모델 연결 설정
 - 컨테이너 실행 및 Kubernetes 배포 방법
 
 ## 테스트 및 품질 평가
