@@ -195,3 +195,23 @@ async def test_contract_violation_and_missing_agent() -> None:
 async def test_empty_plan() -> None:
     report = await _executor().run(ExecutionPlan(tasks=()), {}, _ctx())
     assert report.results == () and report.runs == ()
+
+
+async def test_agent_sees_its_deadline() -> None:
+    from infra_agent.agents.base import remaining_seconds
+
+    seen: list[float | None] = []
+
+    class Probe(FakeAgent):
+        async def run(
+            self, task: AgentTask, ctx: AnalysisContext, upstream: Mapping[str, AgentResult]
+        ) -> AgentResult:
+            seen.append(remaining_seconds())
+            return await super().run(task, ctx, upstream)
+
+    log = Log()
+    plan = build_plan({"server"}, ALL)
+    agents = _agents(log, server=Probe(AgentName.SERVER, log))
+    await _executor(timeout=7).run(plan, agents, _ctx())
+    assert seen and seen[0] is not None and 6 < seen[0] <= 7
+    assert remaining_seconds() is None  # 실행기 밖에서는 마감 없음

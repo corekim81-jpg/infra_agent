@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from infra_agent.agents.explain import AgentExplainer, is_duplicate_check, numbers_grounded
 from infra_agent.agents.prompts import SERVER_SYSTEM_PROMPT
 from infra_agent.config.settings import DataPolicy
@@ -207,3 +209,26 @@ async def test_truncated_evidence_reason() -> None:
     assert "상위 20개만 전달됨" in rejected.reasons[0]
     prompt = fake.requests[0].prompt
     assert '"rows_total": 25' in prompt and '"display": "74.0%"' in prompt
+
+
+async def test_explain_skipped_when_agent_time_is_short() -> None:
+    from infra_agent.agents.base import agent_deadline
+
+    fake = FakeLLM({"explain_server": {"hypotheses": [], "next_checks": []}})
+    with agent_deadline(3.0):  # 남은 시간 - 여유(2초) < 최소 5초
+        out = await _explainer(fake).explain(RESULT, CTX)
+    assert out.llm_calls == 0 and not fake.requests
+    assert "남은 시간이 부족" in out.limitations[0]
+
+
+async def test_explain_times_out_within_agent_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    import infra_agent.agents.explain as explain_mod
+    from infra_agent.agents.base import agent_deadline
+
+    monkeypatch.setattr(explain_mod, "MIN_EXPLAIN_SECONDS", 0.01)
+    monkeypatch.setattr(explain_mod, "RESERVE_SECONDS", 0.05)
+    slow = FakeLLM({"explain_server": {"hypotheses": [], "next_checks": []}}, delay_seconds=5)
+    with agent_deadline(0.2):
+        out = await _explainer(slow).explain(RESULT, CTX)
+    assert out.llm_calls == 1 and out.hypotheses == []
+    assert "응답이 없음" in out.limitations[0] and "코드 판정 결과는 그대로" in out.limitations[0]

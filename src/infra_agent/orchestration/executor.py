@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from infra_agent.agents.base import Agent
+from infra_agent.agents.base import Agent, agent_deadline
 from infra_agent.orchestration.plan import ExecutionPlan
 from infra_agent.schemas import (
     AgentName,
@@ -178,7 +178,8 @@ class Executor:
     ) -> AgentResult:
         timeout = min(self._agent_timeout, remaining)
         try:
-            result = await asyncio.wait_for(agent.run(task, ctx, upstream), timeout=timeout)
+            with agent_deadline(timeout):  # wait_for가 만드는 작업이 마감 시각을 이어받음
+                result = await asyncio.wait_for(agent.run(task, ctx, upstream), timeout=timeout)
         except TimeoutError:
             reason = "요청 제한 시간" if remaining < self._agent_timeout else "에이전트 제한 시간"
             return _not_run(

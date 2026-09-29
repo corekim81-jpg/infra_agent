@@ -37,7 +37,10 @@ def settings() -> Settings:
 )
 async def test_server_questions(settings: Settings, question: str, intent: Intent) -> None:
     assert settings.catalog.path is not None
-    bundle = await answer_question(question, settings, load_catalog(settings.catalog.path))
+    # 모델 설정과 무관하게 코드 판정 경로만 확인 (모델 경로는 test_live_llm.py)
+    bundle = await answer_question(
+        question, settings, load_catalog(settings.catalog.path), use_llm=False
+    )
     assert bundle.context.intent is intent
     assert len(bundle.results) == 1
     result = bundle.results[0]
@@ -45,4 +48,5 @@ async def test_server_questions(settings: Settings, question: str, intent: Inten
     assert result.evidence and bundle.answer.facts
     text = render_text(bundle)
     assert "[근거]" in text and "모델 호출 없음" in text
+    assert "(에이전트 실행: server 성공 " in text
     print("\n" + text)  # pytest -s 로 실제 답변 확인
