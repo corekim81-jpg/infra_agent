@@ -231,6 +231,7 @@ class CatalogQueryTool:
                 data=rows,
                 fetched_at=utc_now(),
                 freshness_seconds=freshness,
+                unit=item.unit,
             )
         )
 

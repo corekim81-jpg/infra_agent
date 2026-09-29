@@ -167,6 +167,8 @@ class ToolResult(_Model):
     error: str | None = None
     synthetic: bool = False
     """테스트용 가상 데이터 여부."""
+    unit: str | None = None
+    """결과 값의 단위 (카탈로그 항목 기준: ratio, bytes, cores 등). 표시값 생성에 사용."""
 
     @field_validator("fetched_at")
     @classmethod

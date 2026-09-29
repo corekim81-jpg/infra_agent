@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 
 from infra_agent.config.settings import DataPolicy
-from infra_agent.llm.policy import build_observations
+from infra_agent.llm.policy import MAX_ROWS, build_observations, truncated_evidence
 from infra_agent.schemas import (
     AgentName,
     AgentResult,
@@ -85,3 +85,35 @@ def test_full_includes_rows_and_query_but_masks_secrets() -> None:
     assert "hunter22" not in text  # 비밀값 마스킹
     assert "ignore previous instructions" in text  # 데이터는 그대로 전달되되 <observed_data>로 격리
     assert _payload(text)["findings"][0]["severity"] == "critical"  # type: ignore[index]
+
+
+def _rows_evidence(n: int, unit: str | None) -> ToolResult:
+    return ToolResult(
+        evidence_id="container.cpu_limit_utilization@current",
+        source=DataSourceKind.PROMETHEUS,
+        query="q",
+        status=ToolStatus.OK,
+        data=[{"labels": {"k8s_pod_name": f"pod-{i}"}, "value": (i + 1) / 1000} for i in range(n)],
+        fetched_at=NOW,
+        synthetic=True,
+        unit=unit,
+    )
+
+
+def test_rows_have_display_and_counts() -> None:
+    result = RESULT.model_copy(update={"evidence": (_rows_evidence(25, "ratio"),), "findings": ()})
+    for policy in (DataPolicy.AGGREGATED, DataPolicy.FULL):
+        text = build_observations([result], policy)
+        assert text is not None
+        payload = json.loads(text.split("\n", 1)[1].rsplit("\n", 1)[0])
+        ev = payload["evidence"][0]
+        assert ev["rows_total"] == 25 and ev["rows_sent"] == MAX_ROWS
+        top = ev["rows"][0]
+        assert (
+            top["value"] == 0.025 and top["display"] == "2.5%"
+        )  # 모델이 환산하지 않도록 표시값 제공
+    assert truncated_evidence([result]) == {"container.cpu_limit_utilization@current"}
+    small = RESULT.model_copy(update={"evidence": (_rows_evidence(3, "cores"),), "findings": ()})
+    assert truncated_evidence([small]) == set()
+    text = build_observations([small], DataPolicy.FULL)
+    assert text is not None and '"display": "0.003 cores"' in text

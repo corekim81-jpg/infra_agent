@@ -5,25 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from infra_agent.schemas import TargetKind, TargetRef
+from infra_agent.units import fmt_delta, fmt_value
 
-
-def fmt_value(value: float, unit: str | None) -> str:
-    if unit == "ratio":
-        return f"{value * 100:.1f}%"
-    if unit == "bytes":
-        size = float(value)
-        for suffix in ("B", "KiB", "MiB", "GiB", "TiB"):
-            if abs(size) < 1024 or suffix == "TiB":
-                return f"{size:.0f}{suffix}" if suffix == "B" else f"{size:.1f}{suffix}"
-            size /= 1024
-    if unit == "cores":
-        return f"{value:.3f} cores"
-    return f"{value:.3g}{(' ' + unit) if unit else ''}"
-
-
-def fmt_delta(value: float, unit: str | None) -> str:
-    sign = "+" if value >= 0 else "-"
-    return sign + fmt_value(abs(value), unit)
+__all__ = ["entity_of", "fmt_delta", "fmt_value", "row_key"]
 
 
 _ENTITY_LABELS: dict[str, tuple[TargetKind, tuple[str, ...]]] = {

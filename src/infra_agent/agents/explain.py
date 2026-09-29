@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from infra_agent.config.settings import DataPolicy
 from infra_agent.llm.base import LLMClient, LLMError, LLMRequest
-from infra_agent.llm.policy import DATA_GUARD, build_observations
+from infra_agent.llm.policy import DATA_GUARD, MAX_ROWS, build_observations, truncated_evidence
 from infra_agent.schemas import (
     AgentResult,
     AnalysisContext,
@@ -36,8 +36,9 @@ MAX_HYPOTHESES = 5
 MAX_NEXT_CHECKS = 3
 _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?")
 """문장 속 수치. 영문자에 붙은 숫자(k3d, p99)는 이름의 일부로 보고 검사하지 않습니다."""
-_OBSERVED_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?(?![A-Za-z0-9])")
-"""관측 데이터 속 독립된 수치. 이름 안의 숫자(k3d의 3)는 근거 수치로 인정하지 않습니다."""
+_OBSERVED_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?(?![0-9])")
+"""관측 데이터 속 수치. 영문자 뒤의 숫자(k3d의 3)는 이름의 일부로 보고 인정하지 않으며,
+단위가 붙은 값(11.5GiB, 0.473 cores)은 인정합니다."""
 _NORMALIZE_RE = re.compile(r"[\s\W_]+")
 MODEL_CHECK_PREFIX = "(모델 제안) "
 
@@ -164,6 +165,7 @@ class AgentExplainer:
             return out
 
         known = {e.evidence_id for e in result.evidence}
+        truncated = truncated_evidence([result])
         for h in parsed.hypotheses:
             ids = tuple(dict.fromkeys(h.evidence_ids))
             reasons: list[str] = []
@@ -172,7 +174,14 @@ class AgentExplainer:
                 reasons.append("근거 ID 불일치: " + (", ".join(unknown) or "(없음)"))
             missing = ungrounded_numbers(h.statement, observed)
             if missing:
-                reasons.append("관측 데이터에 없는 수치: " + ", ".join(missing))
+                reason = "관측 데이터에 없는 수치: " + ", ".join(missing)
+                cut = [i for i in ids if i in truncated]
+                if cut:
+                    reason += (
+                        f" (근거 {', '.join(cut)}는 결과 행 상위 {MAX_ROWS}개만 전달됨. "
+                        "전달되지 않은 대상의 값일 수 있음)"
+                    )
+                reasons.append(reason)
             if reasons:
                 out.rejected.append(
                     RejectedHypothesis(
