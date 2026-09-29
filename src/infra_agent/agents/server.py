@@ -9,19 +9,24 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from infra_agent.agents.base import context_targets
+from infra_agent.agents.common import (
+    Collector,
+    fetch_evidence,
+    finish,
+    is_fresh,
+    with_explanation,
+)
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.formatting import entity_of, fmt_delta, fmt_value, row_key
 from infra_agent.config.settings import AnalysisConfig
 from infra_agent.schemas import (
     AgentName,
     AgentResult,
-    AgentStatus,
     AgentTask,
     AnalysisContext,
-    ErrorInfo,
     Finding,
     FindingKind,
     Intent,
@@ -30,9 +35,11 @@ from infra_agent.schemas import (
     TargetKind,
     ToolResult,
     ToolStatus,
-    Usage,
 )
 from infra_agent.tools import CatalogQueryTool, QueryMode, value_rows
+
+LIMIT_NEAR_CHECK = "limit 근접 컨테이너의 OOM·재시작 여부 확인 (Kubernetes Agent)"
+"""Kubernetes Agent가 같은 요청에서 실행되어 성공하면 종합 단계에서 제외합니다."""
 
 SCOPE_NOTE = (
     "Server 분석 대상은 k3d 노드·Pod·컨테이너 자원입니다. k3d 노드는 같은 물리 서버를 공유하는 "
@@ -107,24 +114,6 @@ CONTEXT_ITEMS: tuple[str, ...] = ("node.cpu_usage", "node.memory_working_set")
 """상태 조회 시 현재 값을 함께 보여줄 항목."""
 
 
-@dataclass
-class _Collector:
-    findings: list[Finding] = field(default_factory=list)
-    evidence: dict[str, ToolResult] = field(default_factory=dict)
-    limitations: list[str] = field(default_factory=list)
-    next_checks: list[str] = field(default_factory=list)
-    errors: list[ErrorInfo] = field(default_factory=list)
-    queries: int = 0
-    failed_queries: int = 0
-
-    def add_evidence(self, result: ToolResult) -> None:
-        self.evidence[result.evidence_id] = result
-
-    def limit(self, text: str) -> None:
-        if text not in self.limitations:
-            self.limitations.append(text)
-
-
 class ServerAgent:
     name = AgentName.SERVER
 
@@ -146,7 +135,7 @@ class ServerAgent:
     ) -> AgentResult:
         """선행 작업이 없는 독립 분석이므로 `upstream`은 사용하지 않습니다."""
         targets = context_targets(ctx)
-        col = _Collector()
+        col = Collector()
         col.limit(SCOPE_NOTE)
         if ctx.intent in (Intent.COMPARE, Intent.ANOMALY) and ctx.baseline_range is not None:
             for inc in INCREASE_CHECKS:
@@ -157,38 +146,8 @@ class ServerAgent:
             for key in CONTEXT_ITEMS:
                 await self._context_values(key, ctx, targets, col)
 
-        status = AgentStatus.SUCCESS
-        if col.failed_queries and col.failed_queries == col.queries:
-            status = AgentStatus.FAILED
-            col.findings.clear()
-        elif col.failed_queries:
-            status = AgentStatus.PARTIAL
-        if status is not AgentStatus.SUCCESS and not col.errors:
-            col.errors.append(ErrorInfo(code="partial", message="일부 조회를 완료하지 못함"))
-        result = AgentResult(
-            task_id=task.task_id,
-            agent=self.name,
-            status=status,
-            findings=tuple(col.findings),
-            evidence=tuple(col.evidence.values()),
-            limitations=tuple(col.limitations),
-            next_checks=tuple(col.next_checks),
-            errors=tuple(col.errors),
-            usage=Usage(tool_calls=col.queries),
-        )
-        if self._explainer is None or not self._explainer.needed(result):
-            return result
-        # 모델 해석: 원인 후보(추정)와 추가 확인만 덧붙이고, 코드 판정(사실)은 그대로 둡니다.
-        extra = await self._explainer.explain(result, ctx)
-        return result.model_copy(
-            update={
-                "findings": result.findings + tuple(extra.hypotheses),
-                "limitations": result.limitations + tuple(extra.limitations),
-                "next_checks": result.next_checks + tuple(extra.next_checks),
-                "usage": Usage(tool_calls=col.queries, llm_calls=extra.llm_calls),
-                "rejected_hypotheses": tuple(extra.rejected),
-            }
-        )
+        result = finish(task, self.name, col)
+        return await with_explanation(result, self._explainer, ctx)
 
     # ------------------------------------------------------------------ 공통
 
@@ -198,35 +157,12 @@ class ServerAgent:
         ctx: AnalysisContext,
         mode: QueryMode,
         targets: Mapping[TargetKind, str],
-        col: _Collector,
+        col: Collector,
     ) -> ToolResult | None:
-        outcome = await self._tool.query(key, ctx, mode, targets)
-        result = outcome.result
-        if outcome.skipped:
-            kinds = ", ".join(k.value for k in outcome.unsupported_targets)
-            col.limit(f"{key}: 요청한 대상({kinds})으로 필터링할 수 없어 조회하지 않음")
-            return None
-        col.queries += 1
-        col.add_evidence(result)
-        if result.status in (ToolStatus.ERROR, ToolStatus.TIMEOUT):
-            col.failed_queries += 1
-            col.errors.append(ErrorInfo(code=result.status.value, message=f"{key}: {result.error}"))
-            col.limit(f"{key}: 조회 실패로 확인하지 못함 ({result.error})")
-            return None
-        if result.freshness_seconds is None:
-            col.limit(f"{key}: 데이터 최신성을 확인하지 못함")
-        elif result.freshness_seconds > self._cfg.stale_after_seconds:
-            col.limit(
-                f"{key}: 최신 샘플이 {result.freshness_seconds:.0f}초 전으로 오래되어(기준 "
-                f"{self._cfg.stale_after_seconds}초) 현재 상태를 반영하지 못할 수 있음"
-            )
-        return result
+        return await fetch_evidence(self._tool, self._cfg, key, ctx, mode, targets, col)
 
     def _is_fresh(self, result: ToolResult) -> bool:
-        return (
-            result.freshness_seconds is not None
-            and result.freshness_seconds <= self._cfg.stale_after_seconds
-        )
+        return is_fresh(result, self._cfg)
 
     # ------------------------------------------------------------------ 임계값 판정
 
@@ -235,7 +171,7 @@ class ServerAgent:
         check: ThresholdCheck,
         ctx: AnalysisContext,
         targets: Mapping[TargetKind, str],
-        col: _Collector,
+        col: Collector,
     ) -> None:
         result = await self._fetch(check.key, ctx, QueryMode.CURRENT, targets, col)
         if result is None:
@@ -272,9 +208,7 @@ class ServerAgent:
             )
         if exceeded:
             if check.key.startswith("container.") and "limit" in check.key:
-                col.next_checks.append(
-                    "limit 근접 컨테이너의 OOM·재시작 여부 확인 (Kubernetes Agent, 미구현)"
-                )
+                col.suggest(LIMIT_NEAR_CHECK)
             return
         if not self._is_fresh(result):
             return  # 오래되었거나 최신성을 모르는 데이터로 "기준 미만"이라고 판단하지 않음
@@ -298,7 +232,7 @@ class ServerAgent:
         key: str,
         ctx: AnalysisContext,
         targets: Mapping[TargetKind, str],
-        col: _Collector,
+        col: Collector,
     ) -> None:
         result = await self._fetch(key, ctx, QueryMode.CURRENT, targets, col)
         if result is None or result.status is ToolStatus.EMPTY:
@@ -329,7 +263,7 @@ class ServerAgent:
         check: IncreaseCheck,
         ctx: AnalysisContext,
         targets: Mapping[TargetKind, str],
-        col: _Collector,
+        col: Collector,
     ) -> None:
         current = await self._fetch(check.key, ctx, QueryMode.WINDOW_AVG, targets, col)
         baseline = await self._fetch(check.key, ctx, QueryMode.BASELINE_AVG, targets, col)

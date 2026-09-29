@@ -23,7 +23,7 @@ InterpretMethod = Literal["rules", "model"]
 MAX_RANGE = timedelta(days=7)
 """개발 환경 Prometheus 보존 기간(1w) 기준 최대 조회 구간."""
 
-IMPLEMENTED_DOMAINS = frozenset({"server"})
+IMPLEMENTED_DOMAINS = frozenset({"server", "kubernetes"})
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "server": (
@@ -68,6 +68,17 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "replica",
         "레플리카",
         "notready",
+        "ready",
+        "kubernetes",
+        "쿠버네티스",
+        "k8s",
+        "클러스터",
+        "cluster",
+        "statefulset",
+        "daemonset",
+        "hpa",
+        "워크로드",
+        "workload",
     ),
     "network": (
         "네트워크",
@@ -160,6 +171,11 @@ def _duration(text: str) -> timedelta | None:
 
 
 KNOWN_DOMAINS = frozenset(DOMAIN_KEYWORDS)
+
+AMBIGUOUS_SERVER_WORDS = ("파드", "pod", "컨테이너", "container", "노드", "node")
+"""자원 사용량 질문과 Kubernetes 상태 질문에 모두 쓰이는 단어.
+Kubernetes 키워드가 있고 서버 분야가 이 단어로만 판별되면 서버 자원 분석을 붙이지 않습니다
+(예: "재시작하거나 Pending 상태인 Pod" → Kubernetes만)."""
 TARGET_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 
 
@@ -241,6 +257,10 @@ def interpret(
         if match:
             targets[kind] = match.group(1)
     domains = {d for d, words in DOMAIN_KEYWORDS.items() if any(w in text for w in words)}
+    if {"server", "kubernetes"} <= domains:
+        specific = [w for w in DOMAIN_KEYWORDS["server"] if w not in AMBIGUOUS_SERVER_WORDS]
+        if not any(w in text for w in specific):
+            domains.discard("server")
     return finalize(
         intent=intent,
         duration=_duration(text),

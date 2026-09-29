@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from infra_agent.agents.server import LIMIT_NEAR_CHECK
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.schemas import (
+    AgentName,
     AgentResult,
     AgentStatus,
     EvidenceSummary,
@@ -47,6 +49,13 @@ def _severity_counts(findings: Sequence[Finding]) -> str:
     return f"{critical + warning}건({', '.join(parts)})"
 
 
+def _compares(interp: Interpretation, results: Sequence[AgentResult]) -> bool:
+    """직전 구간 비교 결과를 먼저 답할지. 비교는 현재 Server Agent만 수행합니다."""
+    return interp.intent in (Intent.COMPARE, Intent.ANOMALY) and any(
+        r.agent is AgentName.SERVER for r in results
+    )
+
+
 def _summary(
     facts: Sequence[Finding], results: Sequence[AgentResult], interp: Interpretation
 ) -> str:
@@ -55,7 +64,7 @@ def _summary(
     if not results:
         return "요청한 분야를 분석할 수 있는 에이전트가 아직 없어 답할 수 없습니다."
     partial = any(r.status is not AgentStatus.SUCCESS for r in results)
-    if interp.intent in (Intent.COMPARE, Intent.ANOMALY):
+    if _compares(interp, results):
         # 비교·증가 질문에는 증가 판정 결과를 먼저 답합니다.
         changes = [f for f in facts if f.basis is JudgementBasis.BASELINE]
         increased = [f for f in changes if f.severity is not Severity.INFO]
@@ -90,7 +99,7 @@ def _summary(
 def synthesize(
     request_id: str, interp: Interpretation, results: Sequence[AgentResult]
 ) -> FinalAnswer:
-    change_first = interp.intent in (Intent.COMPARE, Intent.ANOMALY)
+    change_first = _compares(interp, results)
     facts = sorted(
         (f for r in results for f in r.findings if f.kind is FindingKind.FACT),
         key=lambda f: (
@@ -128,6 +137,9 @@ def synthesize(
         elif r.status is AgentStatus.SKIPPED:
             unverified.append(f"{r.agent.value} 에이전트: 실행하지 않음{reason}")
     next_checks = list(dict.fromkeys(x for r in results for x in r.next_checks))
+    if any(r.agent is AgentName.KUBERNETES and r.status is AgentStatus.SUCCESS for r in results):
+        # 같은 요청에서 Kubernetes Agent가 이미 확인했으므로 Server의 확인 제안은 뺍니다.
+        next_checks = [x for x in next_checks if x != LIMIT_NEAR_CHECK]
     return FinalAnswer(
         request_id=request_id,
         summary=_summary(facts, results, interp),

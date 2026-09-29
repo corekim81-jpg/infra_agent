@@ -64,7 +64,7 @@
 - `llm` 섹션(#15): `provider`(`fake`=모델 없음, `claude_agent_sdk`), `model`(`null`이면 SDK 기본값), `data_policy`(`none`·`aggregated`·`full`, architecture.md 10.2절), `max_calls_per_request`(요청당 모델 호출 상한), `max_budget_usd_per_request`(SDK에 호출마다 전달하는 비용 상한). 예시 파일은 개발 환경 결정에 따라 `claude_agent_sdk`·`full`입니다. 운영 설정에는 그대로 쓰지 않습니다.
   - SDK 설치: `python -m pip install -e ".[llm]"`. SDK는 Claude Code CLI를 실행하므로 CLI 인증(`ANTHROPIC_API_KEY` 또는 Claude Code 로그인)이 필요합니다.
   - SDK가 없거나 CLI를 실행할 수 없으면 규칙 기반 경로로 계속하고 답변에 그 사실을 표시합니다. `ask --no-llm`으로 모델 없이 실행할 수 있습니다.
-- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
+- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한 100(#21에서 60→100: 에이전트들이 공유하며 최신성·대상 존재 확인 조회 포함)). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
 
 ### 2.4 환경 변수
 
@@ -131,7 +131,7 @@
 
 - 전용 ServiceAccount와 읽기 전용 ClusterRole(`get`, `list`, `watch`; `secrets` 제외)을 만든 뒤, 그 계정의 kubeconfig로만 연결합니다.
 - **관리자 kubeconfig는 프로그램에 사용하지 않습니다.** 프로그램 시작 시 권한 점검(`SelfSubjectRulesReview` 등)으로 쓰기 권한이 있으면 경고하는 방안을 구현 단계에서 검토합니다.
-- 읽기 계정 준비 전에는 Kubernetes Agent가 Prometheus의 k8s_cluster 계열 지표로 동작합니다. Pending 사유·종료 사유 등 상세 정보는 API 연동 후 확인할 수 있습니다.
+- 읽기 계정 준비 전에는 Kubernetes Agent가 Prometheus의 k8s_cluster 계열 지표로 동작합니다(구현됨, #21). Pending 사유·종료 사유 등 상세 정보는 API 연동 후 확인할 수 있습니다.
 
 ### 3.6 DB 분석 범위
 
