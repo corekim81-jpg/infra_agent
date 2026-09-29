@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import string
+from collections.abc import Mapping
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
@@ -22,8 +23,12 @@ from typing import Self
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from infra_agent.datasources.prometheus import is_valid_label_name, is_valid_metric_name
-from infra_agent.schemas import AgentName, DataSourceKind
+from infra_agent.datasources.prometheus import (
+    build_selector,
+    is_valid_label_name,
+    is_valid_metric_name,
+)
+from infra_agent.schemas import AgentName, DataSourceKind, TargetKind
 from infra_agent.timeutil import parse_duration
 
 RUNTIME_FIELDS = frozenset({"selector", "range"})
@@ -82,6 +87,8 @@ class CatalogItem(_Model):
     query: str = Field(min_length=1)
     requires_metrics: tuple[str, ...] = ()
     labels: dict[str, str] = Field(default_factory=dict)
+    target_labels: dict[TargetKind, str] = Field(default_factory=dict)
+    """대상 종류 → 이 항목의 지표에서 해당 대상을 가리키는 라벨 이름."""
     evidence: ItemEvidence
     caveats: tuple[str, ...] = ()
 
@@ -107,6 +114,9 @@ class CatalogItem(_Model):
                 raise ValueError(f"labels 키에 예약어를 사용할 수 없습니다: {key}")
             if not is_valid_label_name(label):
                 raise ValueError(f"라벨 이름 형식이 올바르지 않습니다: {label!r}")
+        bad_targets = [v for v in self.target_labels.values() if not is_valid_label_name(v)]
+        if bad_targets:
+            raise ValueError(f"target_labels의 라벨 이름 형식이 올바르지 않습니다: {bad_targets}")
         fields = _template_fields(self.query)
         unknown = fields - RUNTIME_FIELDS - set(self.labels)
         if unknown:
@@ -131,6 +141,22 @@ class CatalogItem(_Model):
             parse_duration(range)
             values["range"] = range.strip()
         return self.query.format(**values)
+
+    def selector_for(self, targets: Mapping[TargetKind, str]) -> tuple[str, list[TargetKind]]:
+        """대상 값으로 selector를 만듭니다.
+
+        반환: (selector, 이 항목이 지원하지 않아 필터링하지 못한 대상 종류 목록).
+        지원하지 않는 대상은 조용히 무시하지 않고 호출자에게 알려 한계로 표시하게 합니다.
+        """
+        matchers: dict[str, str] = {}
+        unsupported: list[TargetKind] = []
+        for kind, value in targets.items():
+            label = self.target_labels.get(kind)
+            if label is None:
+                unsupported.append(kind)
+            else:
+                matchers[label] = value
+        return build_selector(matchers), unsupported
 
     def missing_metrics(self, available: set[str]) -> list[str]:
         return [m for m in self.requires_metrics if m not in available]

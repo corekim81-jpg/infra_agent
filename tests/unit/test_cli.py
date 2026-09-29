@@ -133,3 +133,34 @@ def test_discover_writes_report(
 
 def test_discover_rejects_bad_lookback(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["discover", "--config", str(EXAMPLE), "--lookback", "soon"]) == 2
+
+
+def test_catalog_validate_only(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["catalog", "--config", str(EXAMPLE)]) == 0
+    out = capsys.readouterr().out
+    assert "otel-demo-k3d" in out and "형식 검증 통과" in out
+
+
+def test_catalog_requires_path(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["catalog"]) == 2
+    assert "카탈로그 경로" in capsys.readouterr().err
+
+
+def test_catalog_execute_reports(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from infra_agent.catalog.check import CheckStatus, ItemCheck
+
+    async def fake_check(catalog: object, prom: object, **kwargs: object) -> list[ItemCheck]:
+        return [
+            ItemCheck(key="node.cpu_usage", agent="server", status=CheckStatus.OK, series=3),
+            ItemCheck(key="k8s.pod_phase", agent="kubernetes", status=CheckStatus.EMPTY),
+            ItemCheck(key="x.y", agent="db", status=CheckStatus.ERROR, detail="query_error: bad"),
+        ]
+
+    monkeypatch.setattr("infra_agent.cli.check_catalog", fake_check)
+    assert main(["catalog", "--config", str(EXAMPLE), "--execute"]) == 1
+    out = capsys.readouterr().out
+    assert "[정상] node.cpu_usage (server): 시계열 3개" in out
+    assert "[결과 없음] k8s.pod_phase" in out
+    assert "[오류] x.y (db): query_error: bad" in out

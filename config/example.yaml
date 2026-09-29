@@ -26,7 +26,7 @@ datasources:
     enabled: false           # 초기에는 Prometheus의 hubble_* 지표 사용
 
 catalog:
-  path: null                 # 조회 카탈로그는 4단계에서 추가 예정 (config/catalog/otel-demo.yaml)
+  path: config/catalog/otel-demo.yaml   # 실행 위치(저장소 루트) 기준 상대 경로
 
 llm:
   provider: fake             # fake | claude_agent_sdk (모델 연동은 6단계 예정)

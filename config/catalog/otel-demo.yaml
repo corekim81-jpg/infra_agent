@@ -1,0 +1,655 @@
+# otel-demo 개발 환경(k3d) 조회 카탈로그 v1
+#
+# 근거: `infra-agent discover` 결과(2026-09-29, 개발 서버). 지표·라벨 "이름"만 기록합니다.
+# - evidence.status: discovered = 탐색으로 지표 존재·라벨 이름을 확인함. verified = 값·단위까지 검토함.
+# - Prometheus 메타데이터(타입·단위)가 제공되지 않으므로 단위는 지표 이름 접미사로 판단했고,
+#   이름에 단위가 없는 항목은 caveats에 적었습니다.
+# - `system_*` 지표는 Pod 단위 자동 계측 값으로 보이므로 물리 서버 전체 값으로 사용하지 않습니다(카탈로그 제외).
+# - 템플릿 문법: `{selector}` 대상 매처, `{range}` 범위 구간(예: 5m), PromQL 중괄호는 `{{`, `}}`.
+#   고정 매처가 있는 경우 `{{a="b",{selector}}}` 형태로 씁니다(selector가 비면 끝 쉼표가 남으며 PromQL에서 허용됨).
+# - target_labels: 대상 종류(namespace·node·pod·container·workload·service·database) → 이 지표의 라벨 이름.
+version: 1
+environment: otel-demo-k3d
+items:
+  # ------------------------------------------------------------------ Server: k3d 노드
+  node.cpu_usage:
+    agent: server
+    source: prometheus
+    description: 노드별 CPU 사용량 (kubeletstats)
+    unit: cores
+    query: 'sum by (k8s_node_name) (k8s_node_cpu_usage{{{selector}}})'
+    requires_metrics: [k8s_node_cpu_usage]
+    target_labels: &node_targets {node: k8s_node_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - k3d 노드(컨테이너) 기준 값이며 물리 서버 전체 자원이 아님
+      - 단위(cores)는 지표 이름에 없음. rate(k8s_node_cpu_time_seconds_total)와 교차 검증 필요(live 테스트)
+  node.cpu_utilization:
+    agent: server
+    source: prometheus
+    description: 노드별 CPU 사용량 / 할당 가능 CPU
+    unit: ratio
+    query: >-
+      sum by (k8s_node_name) (k8s_node_cpu_usage{{{selector}}})
+      / sum by (k8s_node_name) (k8s_node_allocatable_cpu{{{selector}}})
+    requires_metrics: [k8s_node_cpu_usage, k8s_node_allocatable_cpu]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [k3d 노드들이 같은 물리 서버를 공유하므로 노드 간 합계가 물리 CPU를 뜻하지 않음]
+  node.memory_working_set:
+    agent: server
+    source: prometheus
+    description: 노드별 메모리 working set
+    unit: bytes
+    query: 'sum by (k8s_node_name) (k8s_node_memory_working_set_bytes{{{selector}}})'
+    requires_metrics: [k8s_node_memory_working_set_bytes]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [k3d 노드(컨테이너) 기준 값이며 물리 서버 전체 자원이 아님]
+  node.memory_utilization:
+    agent: server
+    source: prometheus
+    description: 노드별 메모리 working set / 할당 가능 메모리
+    unit: ratio
+    query: >-
+      sum by (k8s_node_name) (k8s_node_memory_working_set_bytes{{{selector}}})
+      / sum by (k8s_node_name) (k8s_node_allocatable_memory_bytes{{{selector}}})
+    requires_metrics: [k8s_node_memory_working_set_bytes, k8s_node_allocatable_memory_bytes]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  node.filesystem_utilization:
+    agent: server
+    source: prometheus
+    description: 노드별 파일시스템 사용량 / 용량
+    unit: ratio
+    query: >-
+      sum by (k8s_node_name) (k8s_node_filesystem_usage_bytes{{{selector}}})
+      / sum by (k8s_node_name) (k8s_node_filesystem_capacity_bytes{{{selector}}})
+    requires_metrics: [k8s_node_filesystem_usage_bytes, k8s_node_filesystem_capacity_bytes]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  node.network_io_rate:
+    agent: server
+    source: prometheus
+    description: 노드별 네트워크 송수신 바이트 증가율
+    unit: bytes/s
+    query: >-
+      sum by (k8s_node_name, direction)
+      (rate(k8s_node_network_io_bytes_total{{{selector}}}[{range}]))
+    requires_metrics: [k8s_node_network_io_bytes_total]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+
+  # ------------------------------------------------------------------ Server: Pod·컨테이너
+  pod.cpu_usage:
+    agent: server
+    source: prometheus
+    description: Pod별 CPU 사용량 (kubeletstats)
+    unit: cores
+    query: 'sum by (k8s_namespace_name, k8s_pod_name) (k8s_pod_cpu_usage{{{selector}}})'
+    requires_metrics: [k8s_pod_cpu_usage]
+    target_labels: &kubelet_targets
+      namespace: k8s_namespace_name
+      node: k8s_node_name
+      pod: k8s_pod_name
+      workload: k8s_deployment_name
+      service: service_name
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [단위(cores)는 지표 이름에 없음. k8s_pod_cpu_time_seconds_total 증가율과 교차 검증 필요]
+  pod.memory_working_set:
+    agent: server
+    source: prometheus
+    description: Pod별 메모리 working set
+    unit: bytes
+    query: 'sum by (k8s_namespace_name, k8s_pod_name) (k8s_pod_memory_working_set_bytes{{{selector}}})'
+    requires_metrics: [k8s_pod_memory_working_set_bytes]
+    target_labels: *kubelet_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  container.cpu_usage:
+    agent: server
+    source: prometheus
+    description: 컨테이너별 CPU 사용량 (kubeletstats)
+    unit: cores
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name)
+      (container_cpu_usage{{{selector}}})
+    requires_metrics: [container_cpu_usage]
+    target_labels: &container_targets
+      namespace: k8s_namespace_name
+      node: k8s_node_name
+      pod: k8s_pod_name
+      container: k8s_container_name
+      workload: k8s_deployment_name
+      service: service_name
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [단위(cores)는 지표 이름에 없음. rate(container_cpu_time_seconds_total)와 교차 검증 필요]
+  container.memory_working_set:
+    agent: server
+    source: prometheus
+    description: 컨테이너별 메모리 working set
+    unit: bytes
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name)
+      (container_memory_working_set_bytes{{{selector}}})
+    requires_metrics: [container_memory_working_set_bytes]
+    target_labels: *container_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  container.cpu_limit_utilization:
+    agent: server
+    source: prometheus
+    description: 컨테이너 CPU 사용량 / CPU limit (limit이 있는 컨테이너만)
+    unit: ratio
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name) (container_cpu_usage{{{selector}}})
+      / sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name) (k8s_container_cpu_limit{{{selector}}})
+    requires_metrics: [container_cpu_usage, k8s_container_cpu_limit]
+    target_labels: &state_container_targets
+      namespace: k8s_namespace_name
+      node: k8s_node_name
+      pod: k8s_pod_name
+      container: k8s_container_name
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [limit이 없는 컨테이너는 결과에서 빠지므로 "제한 없음"과 "정상"을 구분해야 함]
+  container.memory_limit_utilization:
+    agent: server
+    source: prometheus
+    description: 컨테이너 메모리 working set / 메모리 limit (limit이 있는 컨테이너만)
+    unit: ratio
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name) (container_memory_working_set_bytes{{{selector}}})
+      / sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name) (k8s_container_memory_limit_bytes{{{selector}}})
+    requires_metrics: [container_memory_working_set_bytes, k8s_container_memory_limit_bytes]
+    target_labels: *state_container_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [limit이 없는 컨테이너는 결과에서 빠짐]
+  container.cpu_throttled_ratio:
+    agent: server
+    source: prometheus
+    description: 컨테이너 CPU 스로틀링 비율 (throttled periods / periods, cAdvisor)
+    unit: ratio
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name) (rate(container_cpu_cfs_throttled_periods_total{{{selector}}}[{range}]))
+      / sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name) (rate(container_cpu_cfs_periods_total{{{selector}}}[{range}]))
+    requires_metrics: [container_cpu_cfs_throttled_periods_total, container_cpu_cfs_periods_total]
+    target_labels: &cadvisor_targets
+      namespace: k8s_namespace_name
+      node: k8s_node_name
+      pod: k8s_pod_name
+      container: k8s_container_name
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [cAdvisor 수집 경로이며 CPU limit이 있는 컨테이너에서만 의미가 있음]
+
+  # ------------------------------------------------------------------ Kubernetes: 상태·이벤트성 지표
+  k8s.container_restarts_increase:
+    agent: kubernetes
+    source: prometheus
+    description: 구간 내 컨테이너 재시작 증가 수
+    unit: count
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name)
+      (increase(k8s_container_restarts{{{selector}}}[{range}])) > 0
+    requires_metrics: [k8s_container_restarts]
+    target_labels: *state_container_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [누적 재시작 횟수를 increase로 계산하며 Pod 재생성 시 시계열이 바뀌면 과소 집계될 수 있음]
+  k8s.container_not_ready:
+    agent: kubernetes
+    source: prometheus
+    description: 준비되지 않은 컨테이너 (k8s_container_ready == 0)
+    unit: state
+    query: 'k8s_container_ready{{{selector}}} == 0'
+    requires_metrics: [k8s_container_ready]
+    target_labels: *state_container_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  k8s.pod_phase:
+    agent: kubernetes
+    source: prometheus
+    description: Pod phase 값 (Running·Succeeded 이외를 찾을 때 사용)
+    unit: enum
+    query: 'k8s_pod_phase{{{selector}}} != 2 and k8s_pod_phase{{{selector}}} != 3'
+    requires_metrics: [k8s_pod_phase]
+    target_labels: &pod_state_targets {namespace: k8s_namespace_name, node: k8s_node_name, pod: k8s_pod_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - "값 의미는 OTel k8s_cluster 수신기 기준(1=Pending, 2=Running, 3=Succeeded, 4=Failed, 5=Unknown)으로 가정하며 값 검토 필요"
+      - Pending 사유(스케줄링 실패 등)는 이벤트 또는 Kubernetes API로 확인해야 함
+  k8s.node_not_ready:
+    agent: kubernetes
+    source: prometheus
+    description: Ready 조건이 참이 아닌 노드
+    unit: state
+    query: 'k8s_node_condition_ready{{{selector}}} != 1'
+    requires_metrics: [k8s_node_condition_ready]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: ["값 의미는 1=true, 0=false, -1=unknown으로 가정하며 값 검토 필요"]
+  k8s.node_pressure:
+    agent: kubernetes
+    source: prometheus
+    description: 메모리·디스크·PID 압박 조건이 참인 노드
+    unit: state
+    query: >-
+      k8s_node_condition_memory_pressure{{{selector}}} == 1
+      or k8s_node_condition_disk_pressure{{{selector}}} == 1
+      or k8s_node_condition_pid_pressure{{{selector}}} == 1
+    requires_metrics:
+      - k8s_node_condition_memory_pressure
+      - k8s_node_condition_disk_pressure
+      - k8s_node_condition_pid_pressure
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: ["값 의미는 1=true로 가정하며 값 검토 필요"]
+  k8s.deployment_unavailable:
+    agent: kubernetes
+    source: prometheus
+    description: 원하는 복제 수보다 사용 가능 복제 수가 적은 Deployment
+    unit: count
+    query: '(k8s_deployment_desired{{{selector}}} - k8s_deployment_available{{{selector}}}) > 0'
+    requires_metrics: [k8s_deployment_desired, k8s_deployment_available]
+    target_labels: &deployment_targets {namespace: k8s_namespace_name, workload: k8s_deployment_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  k8s.statefulset_unready:
+    agent: kubernetes
+    source: prometheus
+    description: 원하는 Pod 수보다 준비된 Pod 수가 적은 StatefulSet
+    unit: count
+    query: '(k8s_statefulset_desired_pods{{{selector}}} - k8s_statefulset_ready_pods{{{selector}}}) > 0'
+    requires_metrics: [k8s_statefulset_desired_pods, k8s_statefulset_ready_pods]
+    target_labels: {namespace: k8s_namespace_name, workload: k8s_statefulset_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  k8s.daemonset_unready:
+    agent: kubernetes
+    source: prometheus
+    description: 예정 노드 수보다 준비된 노드 수가 적은 DaemonSet
+    unit: count
+    query: '(k8s_daemonset_desired_scheduled_nodes{{{selector}}} - k8s_daemonset_ready_nodes{{{selector}}}) > 0'
+    requires_metrics: [k8s_daemonset_desired_scheduled_nodes, k8s_daemonset_ready_nodes]
+    target_labels: {namespace: k8s_namespace_name, workload: k8s_daemonset_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  k8s.job_failed_pods:
+    agent: kubernetes
+    source: prometheus
+    description: 실패한 Pod가 있는 Job
+    unit: count
+    query: 'k8s_job_failed_pods{{{selector}}} > 0'
+    requires_metrics: [k8s_job_failed_pods]
+    target_labels: {namespace: k8s_namespace_name, workload: k8s_job_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  k8s.hpa_at_max:
+    agent: kubernetes
+    source: prometheus
+    description: 현재 복제 수가 최대 복제 수에 도달한 HPA
+    unit: state
+    query: 'k8s_hpa_current_replicas{{{selector}}} >= k8s_hpa_max_replicas{{{selector}}}'
+    requires_metrics: [k8s_hpa_current_replicas, k8s_hpa_max_replicas]
+    target_labels: {namespace: k8s_namespace_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  k8s.container_oom_events:
+    agent: kubernetes
+    source: prometheus
+    description: 구간 내 컨테이너 OOM 이벤트 수 (cAdvisor)
+    unit: count
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, k8s_container_name)
+      (increase(container_oom_events_total{{{selector}}}[{range}])) > 0
+    requires_metrics: [container_oom_events_total]
+    target_labels: *cadvisor_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [OOMKilled로 인한 재시작 여부는 컨테이너 종료 사유(이벤트·Kubernetes API)로 확인해야 함]
+
+  # ------------------------------------------------------------------ Network
+  network.drop_rate:
+    agent: network
+    source: prometheus
+    description: Hubble 패킷 드롭 증가율 (사유·출발·도착 워크로드별)
+    unit: packets/s
+    query: >-
+      sum by (reason, source_namespace, source_workload, destination_namespace, destination_workload)
+      (rate(hubble_drop_total{{{selector}}}[{range}]))
+    requires_metrics: [hubble_drop_total]
+    target_labels: &hubble_targets
+      namespace: destination_namespace
+      workload: destination_workload
+      node: k8s_node_name
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - namespace 대상은 도착(destination) 기준으로 필터링함. 출발 기준이 필요하면 source_namespace로 별도 조회
+      - k8s_namespace_name·k8s_pod_name 라벨은 Hubble(cilium) 수집 Pod를 가리키므로 대상 필터에 쓰지 않음
+  network.flows_by_verdict:
+    agent: network
+    source: prometheus
+    description: 판정(verdict)별 흐름 처리 증가율
+    unit: flows/s
+    query: >-
+      sum by (verdict, source_namespace, destination_namespace)
+      (rate(hubble_flows_processed_total{{{selector}}}[{range}]))
+    requires_metrics: [hubble_flows_processed_total]
+    target_labels: *hubble_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [시계열 수가 많은 지표(탐색 시 약 1.5만)이므로 반드시 집계해서 조회]
+  network.tcp_flags_rate:
+    agent: network
+    source: prometheus
+    description: TCP 플래그별 증가율 (RST 등 비정상 연결 종료 확인용)
+    unit: packets/s
+    query: >-
+      sum by (flag, source_workload, destination_namespace, destination_workload)
+      (rate(hubble_tcp_flags_total{{{selector}}}[{range}]))
+    requires_metrics: [hubble_tcp_flags_total]
+    target_labels: *hubble_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [flag 라벨 값(RST, SYN 등)은 값 검토 필요]
+  network.dns_query_rate:
+    agent: network
+    source: prometheus
+    description: DNS 질의·응답 증가율
+    unit: queries/s
+    query: >-
+      sum by (source_namespace, destination_namespace, qtypes)
+      (rate(hubble_dns_queries_total{{{selector}}}[{range}]))
+    requires_metrics: [hubble_dns_queries_total]
+    target_labels: *hubble_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [DNS 응답 코드(rcode) 라벨이 없어 DNS 오류율은 이 지표로 판단할 수 없음]
+  network.hubble_lost_events:
+    agent: network
+    source: prometheus
+    description: Hubble 이벤트 유실 증가율 (관측 누락 가능성)
+    unit: events/s
+    query: 'sum by (k8s_node_name, source) (rate(hubble_lost_events_total{{{selector}}}[{range}]))'
+    requires_metrics: [hubble_lost_events_total]
+    target_labels: {node: k8s_node_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [값이 0보다 크면 Hubble 기반 네트워크 분석 결과가 불완전할 수 있음을 답변에 표시]
+  network.node_interface_errors:
+    agent: network
+    source: prometheus
+    description: 노드 네트워크 인터페이스 오류 증가율
+    unit: errors/s
+    query: >-
+      sum by (k8s_node_name, interface, direction)
+      (rate(k8s_node_network_errors_total{{{selector}}}[{range}]))
+    requires_metrics: [k8s_node_network_errors_total]
+    target_labels: *node_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  network.pod_network_errors:
+    agent: network
+    source: prometheus
+    description: Pod 네트워크 오류 증가율 (kubeletstats)
+    unit: errors/s
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name, direction)
+      (rate(k8s_pod_network_errors_total{{{selector}}}[{range}]))
+    requires_metrics: [k8s_pod_network_errors_total]
+    target_labels: *kubelet_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  network.container_packet_drops:
+    agent: network
+    source: prometheus
+    description: 컨테이너 수신·송신 패킷 드롭 증가율 (cAdvisor)
+    unit: packets/s
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name) (rate(container_network_receive_packets_dropped_total{{{selector}}}[{range}]))
+      + sum by (k8s_namespace_name, k8s_pod_name) (rate(container_network_transmit_packets_dropped_total{{{selector}}}[{range}]))
+    requires_metrics:
+      - container_network_receive_packets_dropped_total
+      - container_network_transmit_packets_dropped_total
+    target_labels: {namespace: k8s_namespace_name, node: k8s_node_name, pod: k8s_pod_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+
+  # ------------------------------------------------------------------ DB: PostgreSQL
+  db.pg_connection_utilization:
+    agent: db
+    source: prometheus
+    description: PostgreSQL 연결 수 / 최대 연결 수
+    unit: ratio
+    query: >-
+      sum by (k8s_namespace_name, k8s_pod_name) (postgresql_backends{{{selector}}})
+      / max by (k8s_namespace_name, k8s_pod_name) (postgresql_connection_max{{{selector}}})
+    requires_metrics: [postgresql_backends, postgresql_connection_max]
+    target_labels: &pg_targets {namespace: k8s_namespace_name, pod: k8s_pod_name, service: service_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [postgresql_backends는 수집 대상 DB별 연결 수 합계이며 수집 대상에서 빠진 DB 연결은 포함되지 않을 수 있음]
+  db.pg_backends:
+    agent: db
+    source: prometheus
+    description: PostgreSQL DB별 연결 수
+    unit: connections
+    query: 'sum by (k8s_pod_name, postgresql_database_name) (postgresql_backends{{{selector}}})'
+    requires_metrics: [postgresql_backends]
+    target_labels: &pg_db_targets
+      namespace: k8s_namespace_name
+      pod: k8s_pod_name
+      service: service_name
+      database: postgresql_database_name
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  db.pg_deadlocks_increase:
+    agent: db
+    source: prometheus
+    description: 구간 내 PostgreSQL 데드락 증가 수
+    unit: count
+    query: >-
+      sum by (k8s_pod_name, postgresql_database_name)
+      (increase(postgresql_deadlocks_total{{{selector}}}[{range}]))
+    requires_metrics: [postgresql_deadlocks_total]
+    target_labels: *pg_db_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [잠금 대기·잠금 그래프 지표는 수집되지 않아 잠금 경합 자체는 판단할 수 없음]
+  db.pg_rollback_ratio:
+    agent: db
+    source: prometheus
+    description: PostgreSQL 롤백 비율 (rollbacks / (commits + rollbacks))
+    unit: ratio
+    query: >-
+      sum by (postgresql_database_name) (rate(postgresql_rollbacks_total{{{selector}}}[{range}]))
+      / (sum by (postgresql_database_name) (rate(postgresql_commits_total{{{selector}}}[{range}]))
+      + sum by (postgresql_database_name) (rate(postgresql_rollbacks_total{{{selector}}}[{range}])))
+    requires_metrics: [postgresql_rollbacks_total, postgresql_commits_total]
+    target_labels: *pg_db_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  db.pg_cache_hit_ratio:
+    agent: db
+    source: prometheus
+    description: PostgreSQL 버퍼 캐시 적중률 (blks_hit / (blks_hit + blks_read))
+    unit: ratio
+    query: >-
+      sum by (postgresql_database_name) (rate(postgresql_blks_hit_total{{{selector}}}[{range}]))
+      / (sum by (postgresql_database_name) (rate(postgresql_blks_hit_total{{{selector}}}[{range}]))
+      + sum by (postgresql_database_name) (rate(postgresql_blks_read_total{{{selector}}}[{range}])))
+    requires_metrics: [postgresql_blks_hit_total, postgresql_blks_read_total]
+    target_labels: *pg_db_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  db.pg_db_size:
+    agent: db
+    source: prometheus
+    description: PostgreSQL DB 크기
+    unit: bytes
+    query: 'sum by (postgresql_database_name) (postgresql_db_size_bytes{{{selector}}})'
+    requires_metrics: [postgresql_db_size_bytes]
+    target_labels: *pg_db_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+
+  # ------------------------------------------------------------------ DB: 애플리케이션 커넥션 풀·DB 작업 지연
+  db.pool_utilization_accounting:
+    agent: db
+    source: prometheus
+    description: accounting(.NET Npgsql) 커넥션 풀 연결 수 / 최대 연결 수
+    unit: ratio
+    query: >-
+      sum by (service_name, db_client_connection_pool_name) (db_client_connection_count{{{selector}}})
+      / max by (service_name, db_client_connection_pool_name) (db_client_connection_max{{{selector}}})
+    requires_metrics: [db_client_connection_count, db_client_connection_max]
+    target_labels: &app_targets {namespace: k8s_namespace_name, pod: k8s_pod_name, service: service_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - "분자는 모든 상태(db_client_connection_state: idle·used 등)의 합계임. 사용 중 연결만 보려면 상태 값 검토 후 필터 추가"
+  db.pool_utilization_product_catalog:
+    agent: db
+    source: prometheus
+    description: product-catalog(Go database/sql) 열린 연결 수 / 최대 열린 연결 수
+    unit: ratio
+    query: >-
+      sum by (service_name) (db_sql_connection_open{{{selector}}})
+      / max by (service_name) (db_sql_connection_max_open{{{selector}}})
+    requires_metrics: [db_sql_connection_open, db_sql_connection_max_open]
+    target_labels: *app_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - 분자는 모든 status(유휴·사용 중) 합계임. 사용 중 연결만 보려면 status 값 검토 후 필터 추가
+      - max_open이 0이면 제한 없음을 뜻할 수 있어 비율이 무한대가 될 수 있음
+  db.pool_wait_rate:
+    agent: db
+    source: prometheus
+    description: product-catalog 커넥션 대기 발생 증가율
+    unit: waits/s
+    query: 'sum by (service_name) (rate(db_sql_connection_wait_total{{{selector}}}[{range}]))'
+    requires_metrics: [db_sql_connection_wait_total]
+    target_labels: *app_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [대기 시간 합계는 db_sql_connection_wait_duration_milliseconds_total로 별도 확인 가능]
+  db.client_operation_latency_p95:
+    agent: db
+    source: prometheus
+    description: DB 작업 지연 p95 (서비스·작업별, OTel db.client.operation.duration)
+    unit: seconds
+    query: >-
+      histogram_quantile(0.95, sum by (le, service_name, db_operation_name)
+      (rate(db_client_operation_duration_seconds_bucket{{{selector}}}[{range}])))
+    requires_metrics: [db_client_operation_duration_seconds_bucket]
+    target_labels: *app_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [탐색 시 이 지표를 보낸 서비스는 product-catalog로 확인됨. 다른 서비스의 DB 지연은 spanmetrics로 확인]
+
+  # ------------------------------------------------------------------ 캐시: Valkey (redis_* 지표)
+  cache.valkey_clients:
+    agent: db
+    source: prometheus
+    description: Valkey 연결 클라이언트 수
+    unit: clients
+    query: >-
+      sum by (service_name, k8s_pod_name) (redis_clients_connected{{{selector}}})
+    requires_metrics: [redis_clients_connected]
+    target_labels: &valkey_targets {namespace: k8s_namespace_name, pod: k8s_pod_name, service: service_name}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [Valkey는 redis 호환 수신기로 수집되어 지표 이름이 redis_* 임 (service_name=valkey-cart)]
+  cache.valkey_memory_used:
+    agent: db
+    source: prometheus
+    description: Valkey 사용 메모리
+    unit: bytes
+    query: 'sum by (service_name, k8s_pod_name) (redis_memory_used_bytes{{{selector}}})'
+    requires_metrics: [redis_memory_used_bytes]
+    target_labels: *valkey_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  cache.valkey_evictions_rejections:
+    agent: db
+    source: prometheus
+    description: Valkey 키 퇴출·연결 거부 증가율
+    unit: per second
+    query: >-
+      sum by (service_name) (rate(redis_keys_evicted_total{{{selector}}}[{range}]))
+      + sum by (service_name) (rate(redis_connections_rejected_total{{{selector}}}[{range}]))
+    requires_metrics: [redis_keys_evicted_total, redis_connections_rejected_total]
+    target_labels: *valkey_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [두 지표의 합이므로 0보다 크면 각각을 따로 조회해 원인을 구분해야 함]
+  cache.valkey_hit_ratio:
+    agent: db
+    source: prometheus
+    description: Valkey 키 조회 적중률
+    unit: ratio
+    query: >-
+      sum by (service_name) (rate(redis_keyspace_hits_total{{{selector}}}[{range}]))
+      / (sum by (service_name) (rate(redis_keyspace_hits_total{{{selector}}}[{range}]))
+      + sum by (service_name) (rate(redis_keyspace_misses_total{{{selector}}}[{range}])))
+    requires_metrics: [redis_keyspace_hits_total, redis_keyspace_misses_total]
+    target_labels: *valkey_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+
+  # ------------------------------------------------------------------ Service: Tempo metrics-generator
+  service.request_rate:
+    agent: service
+    source: prometheus
+    description: 서비스별 span 호출 증가율 (span 종류·상태 코드별, spanmetrics)
+    unit: calls/s
+    query: >-
+      sum by (service, span_kind, status_code)
+      (rate(traces_spanmetrics_calls_total{{{selector}}}[{range}]))
+    requires_metrics: [traces_spanmetrics_calls_total]
+    target_labels: &spanmetrics_targets {namespace: k8s_namespace_name, service: service}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - 트레이스에서 파생된 지표이므로 샘플링 설정에 따라 실제 요청 수와 다를 수 있음
+      - 서비스 라벨 이름이 service_name이 아니라 service 임
+  service.error_ratio:
+    agent: service
+    source: prometheus
+    description: 서비스별 오류 span 비율 (status_code가 오류인 호출 / 전체 호출)
+    unit: ratio
+    query: >-
+      sum by (service, span_kind) (rate(traces_spanmetrics_calls_total{{status_code="STATUS_CODE_ERROR",{selector}}}[{range}]))
+      / sum by (service, span_kind) (rate(traces_spanmetrics_calls_total{{{selector}}}[{range}]))
+    requires_metrics: [traces_spanmetrics_calls_total]
+    target_labels: *spanmetrics_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - 오류 값 STATUS_CODE_ERROR는 Tempo 기본 형식으로 가정함. 값 검토 필요
+      - 구간 내 오류가 전혀 없으면 분자 시계열이 없어 결과가 비므로 "오류 없음"과 "데이터 없음"을 service.request_rate로 구분
+  service.latency_p95:
+    agent: service
+    source: prometheus
+    description: 서비스별 span 지연 p95 (spanmetrics)
+    unit: seconds
+    query: >-
+      histogram_quantile(0.95, sum by (le, service, span_kind)
+      (rate(traces_spanmetrics_latency_bucket{{{selector}}}[{range}])))
+    requires_metrics: [traces_spanmetrics_latency_bucket]
+    target_labels: *spanmetrics_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [단위(seconds)는 Tempo metrics-generator 기본값으로 가정함. 값 검토 필요]
+  service.db_span_latency_p95:
+    agent: service
+    source: prometheus
+    description: DB 호출 span 지연 p95 (db_system_name이 있는 span, 서비스·span 이름별)
+    unit: seconds
+    query: >-
+      histogram_quantile(0.95, sum by (le, service, db_system_name, span_name)
+      (rate(traces_spanmetrics_latency_bucket{{db_system_name!="",{selector}}}[{range}])))
+    requires_metrics: [traces_spanmetrics_latency_bucket]
+    target_labels: *spanmetrics_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [DB Agent와 Service Agent가 함께 참고하는 항목. 단위 가정은 service.latency_p95와 같음]
+  service.dependency_request_rate:
+    agent: service
+    source: prometheus
+    description: 서비스 간 호출 증가율 (service graph, 호출자→피호출자)
+    unit: requests/s
+    query: >-
+      sum by (client, server, connection_type)
+      (rate(traces_service_graph_request_total{{{selector}}}[{range}]))
+    requires_metrics: [traces_service_graph_request_total]
+    target_labels: &graph_targets {namespace: k8s_namespace_name, service: server}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [service 대상은 피호출자(server) 기준으로 필터링함. 호출자 기준은 client 라벨로 별도 조회]
+  service.dependency_failed_rate:
+    agent: service
+    source: prometheus
+    description: 서비스 간 실패 호출 증가율 (service graph)
+    unit: requests/s
+    query: >-
+      sum by (client, server)
+      (rate(traces_service_graph_request_failed_total{{{selector}}}[{range}]))
+    requires_metrics: [traces_service_graph_request_failed_total]
+    target_labels: *graph_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+  service.dependency_latency_p95:
+    agent: service
+    source: prometheus
+    description: 서비스 간 호출의 서버 측 지연 p95 (service graph)
+    unit: seconds
+    query: >-
+      histogram_quantile(0.95, sum by (le, client, server)
+      (rate(traces_service_graph_request_server_seconds_bucket{{{selector}}}[{range}])))
+    requires_metrics: [traces_service_graph_request_server_seconds_bucket]
+    target_labels: *graph_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}

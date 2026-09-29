@@ -14,9 +14,9 @@ Python 기반 멀티 에이전트 인프라 운영 분석 시스템(infra_agent)
 
 ## 현재 상태
 
-- 초기 구현 단계입니다. 설정 로딩(`config`), 공통 스키마(`schemas`), 비밀값 마스킹(`security`), 읽기 전용 Prometheus·Loki·Tempo 클라이언트와 연결 점검(`datasources`), 지표 탐색(`discovery`), 조회 카탈로그 로더(`catalog`), CLI(`config`·`check`·`discover`), 단위·live 테스트, CI가 있습니다. 실제 조회 카탈로그 파일, 에이전트, 모델 연동, 질문 응답 기능은 **아직 없습니다**. 진행 단계는 development.md 6절을 봅니다.
+- 초기 구현 단계입니다. 설정 로딩(`config`), 공통 스키마(`schemas`), 비밀값 마스킹(`security`), 읽기 전용 Prometheus·Loki·Tempo 클라이언트와 연결 점검(`datasources`), 지표 탐색(`discovery`), 조회 카탈로그 로더·점검(`catalog`)과 otel-demo 카탈로그(`config/catalog/otel-demo.yaml`), CLI(`config`·`check`·`discover`·`catalog`), 단위·live 테스트, CI가 있습니다. 에이전트, 모델 연동, 질문 응답 기능은 **아직 없습니다**. 진행 단계는 development.md 6절을 봅니다.
 - 1차 모델 어댑터는 Claude Agent SDK이며, 최종 모델 제공자와 운영 데이터의 외부 모델 전송 허용 범위는 **미확정**입니다 (architecture.md 10–11절). 결정 전 기본값은 모델에 조회 데이터를 보내지 않는 `data_policy: none`입니다.
-- 개발 환경은 OTel Demo(k3d) 서버이며 Windows 호스트에서 SSH 터널로 접속합니다. 지표 이름(`node_*`, `kube_*` 등)을 가정하지 말고 탐색으로 확인한 조회 카탈로그를 사용합니다 (environment.md).
+- 개발 환경은 OTel Demo(k3d) 서버이며 Windows 호스트에서 SSH 터널로 접속합니다. 지표 이름(`node_*`, `kube_*` 등)을 가정하지 말고 탐색으로 확인한 조회 카탈로그를 사용합니다. `system_*`는 물리 서버 값으로 쓰지 않습니다 (environment.md 3절).
 
 ## 검증 명령
 
