@@ -61,6 +61,7 @@
   - 제한 시간은 `tool_timeout_seconds <= agent_timeout_seconds <= request_timeout_seconds`여야 합니다.
   - `default_time_range`는 `30s`, `30m`, `1h`, `7d` 형식입니다.
 - 설정 파일이 없으면 안전한 기본값(`ci` 프로필, 데이터 소스 비활성, `fake` 모델, `data_policy: none`)을 사용합니다.
+- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
 
 ### 2.4 환경 변수
 

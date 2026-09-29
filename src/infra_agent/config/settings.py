@@ -147,12 +147,40 @@ class ExecutionConfig(_Strict):
         return self
 
 
+class AnalysisConfig(_Strict):
+    """결정적 판정 기준. 값은 개발 환경용 제안 기본값이며 설정으로 바꿀 수 있습니다."""
+
+    utilization_warning: float = Field(default=0.8, gt=0, le=10)
+    """사용률(사용량/할당 가능량 또는 limit) 경고 기준."""
+    utilization_critical: float = Field(default=0.9, gt=0, le=10)
+    throttling_warning: float = Field(default=0.25, gt=0, le=1)
+    """CPU 스로틀링 비율(throttled periods / periods) 경고 기준."""
+    increase_ratio: float = Field(default=0.5, gt=0, le=100)
+    """직전 구간 평균 대비 증가 비율 기준 (0.5 = 50% 증가)."""
+    min_cpu_increase_cores: float = Field(default=0.05, ge=0)
+    """증가로 판단할 최소 CPU 증가량(cores). 작은 값의 비율 변동을 무시하기 위함."""
+    min_memory_increase_bytes: int = Field(default=100 * 1024 * 1024, ge=0)
+    stale_after_seconds: int = Field(default=300, ge=10, le=86400)
+    """최신 샘플이 이 시간보다 오래되면 데이터 지연으로 표시."""
+    top_n: int = Field(default=5, ge=1, le=50)
+    """답변에 표시할 대상 수 상한."""
+    max_tool_calls: int = Field(default=60, ge=1, le=1000)
+    """요청당 도구(조회) 호출 상한."""
+
+    @model_validator(mode="after")
+    def _order(self) -> Self:
+        if self.utilization_warning >= self.utilization_critical:
+            raise ValueError("utilization_warning은 utilization_critical보다 작아야 합니다")
+        return self
+
+
 class Settings(_Strict):
     profile: Profile = Profile.CI
     datasources: DatasourcesConfig = DatasourcesConfig()
     catalog: CatalogConfig = CatalogConfig()
     llm: LLMConfig = LLMConfig()
     execution: ExecutionConfig = ExecutionConfig()
+    analysis: AnalysisConfig = AnalysisConfig()
 
     @model_validator(mode="after")
     def _ci_profile_guard(self) -> Self:

@@ -1,0 +1,226 @@
+"""Server Agent와 질문 처리 흐름 테스트. 모든 조회 결과는 가상 데이터입니다."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from expr_prom import ExprProm, Rows
+from infra_agent.agents.server import ServerAgent
+from infra_agent.answer.render import render_text
+from infra_agent.catalog import load_catalog
+from infra_agent.config import load_settings
+from infra_agent.config.settings import AnalysisConfig, HttpDatasourceConfig
+from infra_agent.datasources import PrometheusClient
+from infra_agent.orchestration.runner import answer_question
+from infra_agent.schemas import (
+    AgentName,
+    AgentStatus,
+    AgentTask,
+    AnalysisContext,
+    Budget,
+    FindingKind,
+    Intent,
+    JudgementBasis,
+    Severity,
+    TargetKind,
+    TimeRange,
+)
+from infra_agent.tools import CatalogQueryTool, QueryMode, ToolBudget
+
+ROOT = Path(__file__).resolve().parents[2]
+CATALOG = load_catalog(ROOT / "config/catalog/otel-demo.yaml")
+NOW = datetime(2026, 9, 29, 3, 0, tzinfo=UTC)
+CFG = HttpDatasourceConfig(enabled=True, url="http://prom.synthetic.test")
+TASK = AgentTask(task_id="t1", agent=AgentName.SERVER, objective="test")
+NODES = [{"k8s_node_name": f"k3d-syn-{i}"} for i in range(3)]
+
+
+def _ctx(intent: Intent) -> AnalysisContext:
+    tr = TimeRange.last(timedelta(minutes=30), NOW)
+    return AnalysisContext(
+        request_id="r1",
+        question="q",
+        intent=intent,
+        time_range=tr,
+        baseline_range=tr.previous() if intent is not Intent.STATUS else None,
+        budget=Budget(max_llm_calls=0, max_tool_calls=60, deadline=NOW),
+    )
+
+
+def _expr(key: str, mode: QueryMode, ctx: AnalysisContext, selector: str = "") -> str:
+    tool = CatalogQueryTool(
+        CATALOG,
+        None,
+        agent=AgentName.SERVER,
+        budget=ToolBudget(1),
+        timeout_seconds=1,  # type: ignore[arg-type]
+    )
+    return tool.build_expr(tool.item(key), selector, mode, ctx)
+
+
+def _nodes(*values: float) -> Rows:
+    return [(NODES[i], v) for i, v in enumerate(values)]
+
+
+def _status_prom(ctx: AnalysisContext, fake: ExprProm) -> None:
+    fake.add(_expr("node.cpu_utilization", QueryMode.CURRENT, ctx), _nodes(0.3, 0.85, 0.95))
+    fake.add(_expr("node.memory_utilization", QueryMode.CURRENT, ctx), _nodes(0.4, 0.5, 0.6))
+    fake.add(_expr("node.filesystem_utilization", QueryMode.CURRENT, ctx), _nodes(0.1, 0.2, 0.3))
+    fake.add(
+        _expr("container.memory_limit_utilization", QueryMode.CURRENT, ctx),
+        [
+            (
+                {
+                    "k8s_namespace_name": "otel-demo",
+                    "k8s_pod_name": "cart-x",
+                    "k8s_container_name": "cart",
+                },
+                0.5,
+            )
+        ],
+    )
+    # container.cpu_limit_utilization, container.cpu_throttled_ratio: 등록하지 않음 → 빈 결과
+    fake.add(_expr("node.cpu_usage", QueryMode.CURRENT, ctx), _nodes(0.5, 1.2, 2.0))
+    fake.add(
+        _expr("node.memory_working_set", QueryMode.CURRENT, ctx),
+        _nodes(2 * 2**30, 3 * 2**30, 4 * 2**30),
+    )
+
+
+async def _run(ctx: AnalysisContext, fake: ExprProm, targets: dict[TargetKind, str] | None = None):  # type: ignore[no-untyped-def]
+    async with PrometheusClient.from_config(CFG, transport=fake.transport()) as prom:
+        tool = CatalogQueryTool(
+            CATALOG, prom, agent=AgentName.SERVER, budget=ToolBudget(60), timeout_seconds=5
+        )
+        return await ServerAgent(tool, AnalysisConfig()).run(TASK, ctx, targets or {})
+
+
+async def test_status_thresholds() -> None:
+    ctx = _ctx(Intent.STATUS)
+    fake = ExprProm()
+    _status_prom(ctx, fake)
+    result = await _run(ctx, fake)
+    assert result.status is AgentStatus.SUCCESS
+    by_sev = {s: [f.statement for f in result.findings if f.severity is s] for s in Severity}
+    assert len(by_sev[Severity.CRITICAL]) == 1 and "k3d-syn-2 95.0%" in by_sev[Severity.CRITICAL][0]
+    assert len(by_sev[Severity.WARNING]) == 1 and "k3d-syn-1 85.0%" in by_sev[Severity.WARNING][0]
+    infos = "\n".join(by_sev[Severity.INFO])
+    assert "노드 메모리 사용률" in infos and "모두 기준(80.0%) 미만" in infos
+    assert "노드 CPU 사용량 현재 값" in infos and "k3d-syn-2 2.000 cores" in infos
+    assert "4.0GiB" in infos
+    # 빈 결과는 "정상"이 아니라 한계로 표시
+    assert any("CPU limit이 있는 컨테이너 결과가 없어" in x for x in result.limitations)
+    assert any("스로틀링 결과가 없어" in x for x in result.limitations)
+    assert any("물리 서버" in x for x in result.limitations)
+    # 근거 ID는 모두 실제 evidence에 존재 (스키마가 강제)
+    assert all(f.evidence_ids for f in result.findings)
+    assert (
+        fake.unmatched.count(_expr("container.cpu_limit_utilization", QueryMode.CURRENT, ctx)) == 1
+    )
+
+
+async def test_stale_data_is_not_reported_as_normal() -> None:
+    ctx = _ctx(Intent.STATUS)
+    fake = ExprProm(freshness_seconds=3600)
+    _status_prom(ctx, fake)
+    result = await _run(ctx, fake)
+    statements = [f.statement for f in result.findings]
+    assert not any("미만" in s for s in statements)  # 오래된 데이터로 "기준 미만" 판정 금지
+    assert any(f.severity is Severity.CRITICAL for f in result.findings)  # 관측값 초과는 보고
+    assert any("오래되어" in x for x in result.limitations)
+
+
+async def test_increase_detection() -> None:
+    ctx = _ctx(Intent.ANOMALY)
+    assert ctx.baseline_range is not None
+    fake = ExprProm()
+    win = _expr("node.cpu_usage", QueryMode.WINDOW_AVG, ctx)
+    fake.add(win, _nodes(1.0, 0.52, 0.02), at=ctx.time_range.end)
+    fake.add(win, _nodes(0.5, 0.50, 0.01), at=ctx.baseline_range.end)
+    mem = _expr("pod.memory_working_set", QueryMode.WINDOW_AVG, ctx)
+    pod_a = {"k8s_namespace_name": "otel-demo", "k8s_pod_name": "cart-a"}
+    pod_new = {"k8s_namespace_name": "otel-demo", "k8s_pod_name": "cart-new"}
+    fake.add(mem, [(pod_a, 400 * 2**20), (pod_new, 50 * 2**20)], at=ctx.time_range.end)
+    fake.add(mem, [(pod_a, 200 * 2**20)], at=ctx.baseline_range.end)
+    result = await _run(ctx, fake)
+    increases = [
+        f
+        for f in result.findings
+        if f.basis is JudgementBasis.BASELINE and f.severity is Severity.WARNING
+    ]
+    texts = [f.statement for f in increases]
+    assert len(increases) == 2, texts
+    assert any("k3d-syn-0" in t and "+100%" in t for t in texts)  # 0.5 → 1.0
+    assert not any("k3d-syn-2" in t for t in texts)  # +100%지만 0.01 cores로 최소 증가량 미만
+    assert any("otel-demo/cart-a" in t and "200.0MiB → 400.0MiB" in t for t in texts)
+    assert all(len(f.evidence_ids) == 2 for f in increases)
+    assert all(f.kind is FindingKind.FACT for f in increases)
+    assert any("기준 구간에 없던 대상 1개" in x for x in result.limitations)
+    assert any("비교할 수 없음" in x for x in result.limitations)  # node.memory 등 미등록 → 빈 결과
+    assert result.next_checks
+
+
+async def test_target_filter_and_unsupported() -> None:
+    ctx = _ctx(Intent.STATUS)
+    fake = ExprProm()
+    result = await _run(ctx, fake, {TargetKind.NAMESPACE: "otel-demo"})
+    # 노드 항목은 namespace로 필터링할 수 없어 조회하지 않음
+    assert any("node.cpu_utilization: 요청한 대상(namespace)" in x for x in result.limitations)
+    sent = [q for q, _ in fake.queries if not q.startswith("time()")]
+    assert sent and all('k8s_namespace_name="otel-demo"' in q for q in sent)
+
+
+async def test_all_queries_failing_marks_failed() -> None:
+    ctx = _ctx(Intent.STATUS)
+    fake = ExprProm()
+    for key in (
+        "node.cpu_utilization",
+        "node.memory_utilization",
+        "node.filesystem_utilization",
+        "container.cpu_limit_utilization",
+        "container.memory_limit_utilization",
+        "container.cpu_throttled_ratio",
+        "node.cpu_usage",
+        "node.memory_working_set",
+    ):
+        fake.fail(_expr(key, QueryMode.CURRENT, ctx))
+    result = await _run(ctx, fake)
+    assert result.status is AgentStatus.FAILED
+    assert not result.findings and result.errors
+
+
+async def test_answer_question_end_to_end() -> None:
+    settings = load_settings(
+        environ={
+            "INFRA_AGENT_PROFILE": "dev-tunnel",
+            "INFRA_AGENT__DATASOURCES__PROMETHEUS__ENABLED": "true",
+            "INFRA_AGENT__DATASOURCES__PROMETHEUS__URL": "http://prom.synthetic.test",
+        }
+    )
+    ctx = _ctx(Intent.STATUS)
+    fake = ExprProm()
+    _status_prom(ctx, fake)
+    bundle = await answer_question(
+        "현재 서버 상태가 어때?", settings, CATALOG, now=NOW, transport=fake.transport()
+    )
+    assert bundle.context.intent is Intent.STATUS
+    assert bundle.context.budget.max_llm_calls == 0
+    text = render_text(bundle, show_queries=True)
+    for section in ("[질문 해석]", "[요약]", "[이상 징후]", "[확인된 사실]", "[근거]", "[한계]"):
+        assert section in text
+    assert "기준을 넘는 이상 징후 2건(심각 1건, 경고 1건)" in text
+    assert "k8s_node_cpu_usage" in text  # --show-queries
+    assert "모델 호출 없음" in text
+
+    other = await answer_question(
+        "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘",
+        settings,
+        CATALOG,
+        now=NOW,
+        transport=fake.transport(),
+    )
+    assert other.results == ()  # 서버 분야가 아니므로 실행하지 않음
+    assert "답할 수 없습니다" in other.answer.summary
+    assert len(other.answer.unverified_areas) == 3
+    assert "- 실행한 조회 없음" in render_text(other)

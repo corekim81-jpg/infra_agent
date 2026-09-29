@@ -164,3 +164,53 @@ def test_catalog_execute_reports(
     assert "[정상] node.cpu_usage (server): 시계열 3개" in out
     assert "[결과 없음] k8s.pod_phase" in out
     assert "[오류] x.y (db): query_error: bad" in out
+
+
+def test_ask_requires_prometheus(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["ask", "현재 서버 상태가 어때?"]) == 1
+    assert "Prometheus가 비활성화" in capsys.readouterr().err
+
+
+def test_ask_renders_answer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from infra_agent.answer.synthesis import synthesize
+    from infra_agent.config import load_settings as _ls
+    from infra_agent.orchestration.rules import interpret
+    from infra_agent.orchestration.runner import AnswerBundle, build_context
+
+    seen: dict[str, object] = {}
+
+    async def fake_answer(
+        question: str, settings: object, catalog: object, **kw: object
+    ) -> AnswerBundle:
+        seen.update(kw)
+        now = datetime(2026, 9, 29, 3, 0, tzinfo=UTC)
+        interp = interpret(question, now, timedelta(minutes=30))
+        ctx = build_context(question, interp, _ls(environ={}), now)
+        return AnswerBundle(interp, ctx, (), synthesize(ctx.request_id, interp, ()))
+
+    monkeypatch.setattr("infra_agent.cli.answer_question", fake_answer)
+    code = main(
+        [
+            "ask",
+            "현재 서버 상태가 어때?",
+            "--config",
+            str(EXAMPLE),
+            "--namespace",
+            "otel-demo",
+            "--range",
+            "15m",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "[질문 해석]" in out and "[요약]" in out
+    assert seen["range_override"] == "15m"
+    from infra_agent.schemas import TargetKind
+
+    assert seen["target_overrides"] == {TargetKind.NAMESPACE: "otel-demo"}
+    assert main(["ask", "상태", "--config", str(EXAMPLE), "--json"]) == 0
+    assert '"intent": "status"' in capsys.readouterr().out
