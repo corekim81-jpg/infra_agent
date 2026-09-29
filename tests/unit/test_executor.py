@@ -90,12 +90,15 @@ def _agents(log: Log, **overrides: FakeAgent) -> dict[AgentName, FakeAgent]:
 async def test_independent_tasks_run_in_parallel() -> None:
     log = Log()
     plan = build_plan({"server", "kubernetes"}, ALL)
-    report = await _executor().run(plan, _agents(log), _ctx())
+    # Windows는 타이머 해상도가 약 15.6ms이고 sleep이 조금 일찍 끝날 수 있으므로,
+    # 충분히 긴 지연(100ms)에 넉넉한 하한(50ms)으로 실행 시간 기록을 확인합니다.
+    slow = {a: FakeAgent(a, log, delay=0.1) for a in ALL}
+    report = await _executor().run(plan, slow, _ctx())
     assert report.peak_concurrency == 2
     assert [e[0] for e in log.events[:2]] == ["start", "start"]  # 둘 다 시작한 뒤 종료
     assert all(r.status is AgentStatus.SUCCESS for r in report.results)
     assert [r.task_id for r in report.results] == [t.task_id for t in plan.tasks]
-    assert all(r.usage.elapsed_ms >= 15 for r in report.results)
+    assert all(r.usage.elapsed_ms >= 50 for r in report.results)
 
 
 async def test_concurrency_limit() -> None:
