@@ -208,6 +208,13 @@ async def test_kubernetes_question_runs_only_kubernetes_agent() -> None:
     assert "기준을 넘는 이상 징후 5건(심각 2건, 경고 3건)" in bundle.answer.summary
     text = render_text(bundle)
     assert "(에이전트 실행: kubernetes 성공 " in text
+    # 상태 질문이라도 재시작·OOM은 구간 전체로 집계했음을 밝히고, "평균"으로 표시하지 않음
+    assert "- 구간 집계 항목(재시작·OOM 등)의 구간: " in text
+    restart_line = next(x for x in text.splitlines() if x.startswith("- k8s.container_restarts"))
+    assert restart_line.endswith(")") and " 구간 집계, " in restart_line
+    assert " 평균, " not in restart_line
+    phase_line = next(x for x in text.splitlines() if x.startswith("- k8s.pod_phase@current"))
+    assert " 시점, " in phase_line
 
 
 async def test_server_and_kubernetes_run_together() -> None:

@@ -7,7 +7,7 @@ from datetime import datetime
 from infra_agent.orchestration.executor import TaskRun
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.orchestration.runner import AnswerBundle
-from infra_agent.schemas import AgentStatus, Intent, Severity, TimeRange
+from infra_agent.schemas import AgentStatus, EvidenceSummary, Intent, Severity, TimeRange
 
 _INTENT = {
     Intent.STATUS: "현재 상태 조회",
@@ -42,6 +42,17 @@ _STATUS = {
 }
 
 
+def _is_window(e: EvidenceSummary) -> bool:
+    return str(e.key_values.get("id", "")).endswith("@window")
+
+
+def _evidence_window(e: EvidenceSummary, at: datetime) -> str:
+    """근거의 시간 표현: 순간값은 시점, 구간 평균은 평균, 구간 증가량 등은 구간 집계."""
+    if e.time_range is None:
+        return f"{_t(at)} 시점"
+    return _range(e.time_range) + (" 구간 집계" if _is_window(e) else " 평균")
+
+
 def _run_text(run: TaskRun) -> str:
     after = f", {'·'.join(run.depends_on)} 이후" if run.depends_on else ""
     return f"{run.agent} {_STATUS[run.status]} {run.elapsed_ms / 1000:.1f}초{after}"
@@ -62,6 +73,9 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append(f"- 기준 구간: {_range(ctx.baseline_range)}")
     targets = ", ".join(f"{t.kind.value}={t.name}" for t in ctx.targets) or "전체"
     lines.append(f"- 대상: {targets}")
+    if ctx.intent is Intent.STATUS and any(_is_window(e) for e in answer.evidence):
+        # 상태 질문이라도 재시작·OOM처럼 구간 전체를 집계한 항목이 있으면 그 구간을 밝힙니다.
+        lines.append(f"- 구간 집계 항목(재시작·OOM 등)의 구간: {_range(ctx.time_range)}")
     lines.append(f"- 해석 방식: {_method(interp)}")
     for a in interp.assumptions:
         lines.append(f"- 가정: {a}")
@@ -95,9 +109,7 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append("- 실행한 조회 없음")
     for e in answer.evidence:
         kv = e.key_values
-        window = (
-            _range(e.time_range) + " 평균" if e.time_range else f"{_t(ctx.time_range.end)} 시점"
-        )
+        window = _evidence_window(e, ctx.time_range.end)
         extra = f", 최신 샘플 {kv['freshness_seconds']}초 전" if "freshness_seconds" in kv else ""
         err = f", 오류: {kv['error']}" if "error" in kv else ""
         lines.append(
