@@ -335,6 +335,7 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
     assert "제외 이유: 관측 데이터에 없는 수치: 417" in diag
     # 조회 데이터가 모델 입력에 포함됨(full)
     assert "k8s_node_cpu_usage" in llm.requests[1].prompt
+    assert '"display": "95.0%"' in llm.requests[1].prompt  # 카탈로그 단위로 만든 표시값
 
     # --no-llm: 모델을 호출하지 않음
     off = await answer_question(

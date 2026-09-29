@@ -176,3 +176,34 @@ def test_numbers_compared_as_values_not_substrings() -> None:
     assert not numbers_grounded("3시간째 증가", observed)  # k3d의 3은 근거 수치가 아님
     assert not numbers_grounded("0.4 증가", observed)  # 30.4의 일부는 인정하지 않음
     assert numbers_grounded("k3d-syn-2 노드", observed)
+
+
+def test_unit_suffixed_observed_numbers_grounded() -> None:
+    observed = '{"display": "11.5GiB"}, {"display": "0.473 cores"}, {"display": "0.9%"}'
+    assert numbers_grounded("메모리 11.5GiB, CPU 0.473 cores, 사용률 0.9%", observed)
+
+
+async def test_truncated_evidence_reason() -> None:
+    rows = [{"labels": {"k8s_pod_name": f"pod-{i}"}, "value": 0.5 + i / 100} for i in range(25)]
+    ev = EVIDENCE.model_copy(update={"data": rows, "unit": "ratio"})
+    result = RESULT.model_copy(update={"evidence": (ev,)})
+    fake = FakeLLM(
+        {
+            "explain_server": {
+                "hypotheses": [
+                    {
+                        "statement": "kafka CPU 사용률은 0.1%로 낮은데 메모리만 높음",
+                        "evidence_ids": [EVIDENCE.evidence_id],
+                        "confidence": "low",
+                    }
+                ],
+                "next_checks": [],
+            }
+        }
+    )
+    out = await _explainer(fake).explain(result, CTX)
+    (rejected,) = out.rejected
+    assert rejected.reasons[0].startswith("관측 데이터에 없는 수치: 0.1 (근거 ")
+    assert "상위 20개만 전달됨" in rejected.reasons[0]
+    prompt = fake.requests[0].prompt
+    assert '"rows_total": 25' in prompt and '"display": "74.0%"' in prompt

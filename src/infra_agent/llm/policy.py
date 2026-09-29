@@ -3,9 +3,12 @@
 | 정책 | 모델에 전달 |
 | --- | --- |
 | none | 질문 문장만 (질문 해석). 조회 결과는 전달하지 않음 |
-| aggregated | + 판정 결과, 근거 요약(상태·결과 수·최신성), 결과 행의 대상 라벨과 값(상위 N) |
+| aggregated | + 판정 결과, 근거 요약(상태·결과 수·최신성), 대상 라벨·값·표시값(상위 N행) |
 | full | + 결과 행의 전체 라벨, 실행한 조회식 (로그·트레이스 발췌는 해당 에이전트에서 추가) |
 
+각 행에는 원값(`value`)과 답변과 같은 형식의 표시값(`display`, 예: 0.9%, 11.5GiB)을
+함께 넣어 모델이 직접 환산하지 않게 합니다. 근거별 전체 행 수(`rows_total`)와
+전달 행 수(`rows_sent`)를 표시해 전달되지 않은 대상이 있음을 알립니다.
 모든 조회 데이터는 비밀값 마스킹을 거친 뒤 `<observed_data>`로 격리하며,
 지침에서 데이터 속 문장을 지시로 따르지 않도록 명시합니다.
 """
@@ -20,6 +23,7 @@ from infra_agent.config.settings import DataPolicy
 from infra_agent.schemas import AgentResult, ToolResult
 from infra_agent.security import redact
 from infra_agent.tools import value_rows
+from infra_agent.units import fmt_value
 
 TARGET_LABELS = frozenset(
     {
@@ -56,16 +60,28 @@ def _evidence(e: ToolResult, policy: DataPolicy) -> dict[str, Any]:
         item["time_range"] = [e.time_range.start.isoformat(), e.time_range.end.isoformat()]
     if e.error:
         item["error"] = e.error
-    rows = sorted(value_rows(e), key=lambda r: -r[1])[:MAX_ROWS]
+    all_rows = value_rows(e)
+    rows = sorted(all_rows, key=lambda r: -r[1])[:MAX_ROWS]
+    item["rows_total"] = len(all_rows)
+    item["rows_sent"] = len(rows)
     if policy is DataPolicy.FULL:
         item["query"] = e.query
-        item["rows"] = [{"labels": labels, "value": value} for labels, value in rows]
-    else:
-        item["rows"] = [
-            {"labels": {k: v for k, v in labels.items() if k in TARGET_LABELS}, "value": value}
-            for labels, value in rows
-        ]
+    item["rows"] = [
+        {
+            "labels": labels
+            if policy is DataPolicy.FULL
+            else {k: v for k, v in labels.items() if k in TARGET_LABELS},
+            "value": value,
+            "display": fmt_value(value, e.unit),
+        }
+        for labels, value in rows
+    ]
     return item
+
+
+def truncated_evidence(results: Sequence[AgentResult]) -> set[str]:
+    """결과 행 일부만 모델에 전달한 근거 ID."""
+    return {e.evidence_id for r in results for e in r.evidence if len(value_rows(e)) > MAX_ROWS}
 
 
 def build_observations(results: Sequence[AgentResult], policy: DataPolicy) -> str | None:
