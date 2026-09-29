@@ -298,7 +298,12 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
                         ),
                         "evidence_ids": ["node.cpu_utilization@current"],
                         "confidence": "low",
-                    }
+                    },
+                    {
+                        "statement": "노드 CPU가 417분째 증가 중",
+                        "evidence_ids": ["node.cpu_utilization@current"],
+                        "confidence": "low",
+                    },
                 ],
                 "next_checks": [],
             },
@@ -322,6 +327,12 @@ async def test_answer_with_model_full_policy(monkeypatch: object) -> None:
     assert "[원인 후보 (추정, 모델 해석)]" in text
     assert "모델 호출 2회(fake, data_policy=full)" in text
     assert "- 해석 방식: 모델" in text and "가정: 질문 해석" not in text
+    # 제외된 원인 후보: 본문에는 없고 진단 출력(--show-queries)에만 원문·이유 표시
+    assert "417분째" not in text and "[제외된 원인 후보" not in text
+    diag = render_text(bundle, show_queries=True)
+    assert "[제외된 원인 후보 (검증 실패, 진단용)]" in diag
+    assert "- (server) 노드 CPU가 417분째 증가 중" in diag
+    assert "제외 이유: 관측 데이터에 없는 수치: 417" in diag
     # 조회 데이터가 모델 입력에 포함됨(full)
     assert "k8s_node_cpu_usage" in llm.requests[1].prompt
 

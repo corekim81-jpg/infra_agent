@@ -180,6 +180,7 @@ class ServerAgent:
                 "limitations": result.limitations + tuple(extra.limitations),
                 "next_checks": result.next_checks + tuple(extra.next_checks),
                 "usage": Usage(tool_calls=col.queries, llm_calls=extra.llm_calls),
+                "rejected_hypotheses": tuple(extra.rejected),
             }
         )
 

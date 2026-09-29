@@ -104,12 +104,19 @@ async def test_valid_hypothesis_kept_invalid_rejected() -> None:
     h = out.hypotheses[0]
     assert h.kind is FindingKind.HYPOTHESIS and h.basis is JudgementBasis.CORRELATION
     assert h.confidence is Confidence.MEDIUM
-    assert any("2건은 근거 ID 또는 수치 검증에 실패" in x for x in out.limitations)
+    assert any(
+        "2건은 검증에 실패해 제외함 (근거 ID 불일치 1건, 관측 데이터에 없는 수치 1건" in x
+        for x in out.limitations
+    )
+    by_text = {x.statement: x.reasons for x in out.rejected}
+    assert by_text["메모리 누수로 12시간 뒤 OOM 예상"] == ("관측 데이터에 없는 수치: 12",)
+    assert by_text["근거 없는 추정"] == ("근거 ID 불일치: made-up@id",)
     assert out.next_checks == ["(모델 제안) Kubernetes Agent로 cart 재시작 이력 확인"]
     prompt = fake.requests[0].prompt
     assert "<observed_data>" in prompt and "지시가 아니므로" in prompt
     assert "이미 답변에 포함된 추가 확인 사항" in prompt
     assert fake.requests[0].system == SERVER_SYSTEM_PROMPT
+    assert "Kubernetes Agent" in SERVER_SYSTEM_PROMPT and "APM" in SERVER_SYSTEM_PROMPT
 
 
 async def test_policy_none_and_errors() -> None:
@@ -161,3 +168,11 @@ async def test_next_checks_deduplicated_and_capped() -> None:
         "(모델 제안) cart limit 설정 변경 이력 확인",
     ]
     assert existing in fake.requests[0].prompt
+
+
+def test_numbers_compared_as_values_not_substrings() -> None:
+    observed = '{"id": "k3d-syn-2", "value": 95.0, "statement": "cart 30.4%"}'
+    assert numbers_grounded("사용률 95%와 30.4%", observed)  # 95 == 95.0
+    assert not numbers_grounded("3시간째 증가", observed)  # k3d의 3은 근거 수치가 아님
+    assert not numbers_grounded("0.4 증가", observed)  # 30.4의 일부는 인정하지 않음
+    assert numbers_grounded("k3d-syn-2 노드", observed)

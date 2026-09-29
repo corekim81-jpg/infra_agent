@@ -104,6 +104,14 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append("")
         lines.append("[추가 확인]")
         lines.extend(f"- {x}" for x in answer.next_checks)
+    rejected = [(r.agent.value, x) for r in bundle.results for x in r.rejected_hypotheses]
+    if show_queries and rejected:
+        lines.append("")
+        lines.append("[제외된 원인 후보 (검증 실패, 진단용)]")
+        for agent, x in rejected:
+            ids = ", ".join(x.evidence_ids) or "(없음)"
+            lines.append(f"- ({agent}) {x.statement}")
+            lines.append(f"    근거 {ids} / 제외 이유: {'; '.join(x.reasons)}")
     lines.append("")
     calls = sum(r.usage.tool_calls for r in bundle.results)
     if bundle.llm_calls:

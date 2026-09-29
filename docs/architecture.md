@@ -186,6 +186,7 @@ AgentResult
   task_id, agent, status: success|partial|failed|skipped
   findings, evidence: [ToolResult]   # findings의 evidence_ids는 evidence에 존재해야 함
   limitations, next_checks, errors: [{code, message}], usage: {llm_calls, tool_calls, elapsed_ms}
+  rejected_hypotheses: [{statement, evidence_ids, reasons}]   # 검증 실패로 제외한 모델 원인 후보(진단용, 답변 본문 제외)
   # 규칙: failed에는 findings 금지, failed/partial에는 errors 또는 limitations 필수
 
 FinalAnswer
@@ -260,10 +261,10 @@ DataSource (인터페이스)
 | 용도 | 담당 | 모델 입력 | 출력 검증 |
 | --- | --- | --- | --- |
 | 질문 해석 | Coordinator (`orchestration/llm_interpret.py`) | 질문 문장만 | JSON Schema + Pydantic 검증, 대상 이름 형식 검사, 규칙 기반과 같은 보정(`finalize`). 실패 시 규칙 기반 해석으로 대체. 답변의 "해석 방식"(모델/규칙 기반과 그 이유)으로 표시하며 가정과 섞지 않음 |
-| 원인 후보·추가 확인 제안 | 전문 에이전트별 (`agents/explain.py`, 지침 `agents/prompts.py`) | 해당 에이전트의 판정·근거(`data_policy` 범위) | 근거 ID가 그 에이전트의 실제 근거인지, 문장 속 수치가 관측 데이터에 그대로 있는지, confidence ≤ medium. 실패한 후보는 제외하고 한계에 건수 표시. 추가 확인 제안은 코드가 낸 항목을 모델에 알려 주고, 겹치는 제안(정규화 후 동일·포함)은 제외하며 최대 3개 |
+| 원인 후보·추가 확인 제안 | 전문 에이전트별 (`agents/explain.py`, 지침 `agents/prompts.py`) | 해당 에이전트의 판정·근거(`data_policy` 범위) | 근거 ID가 그 에이전트의 실제 근거인지, 문장 속 수치가 관측 데이터에 같은 값으로 있는지(독립된 수치끼리 값 비교, 이름 안의 숫자·계산값은 불인정), confidence ≤ medium. 실패한 후보는 제외하고 한계에 이유별 건수 표시, 원문과 이유는 `rejected_hypotheses`(`ask --show-queries`, `--json`)로 확인. 추가 확인 제안은 코드가 낸 항목을 모델에 알려 주고, 겹치는 제안(정규화 후 동일·포함)은 제외하며 최대 3개 |
 
 - **사실(Finding kind=fact)은 코드 판정만** 사용합니다. 모델은 원인 후보(kind=hypothesis, basis=correlation)와 추가 확인 제안만 덧붙이며 요약·판정을 바꾸지 않습니다.
-- 에이전트마다 별도 호출과 별도 지침을 씁니다(현재 Server Agent 지침). 모델 해석은 경고·심각 판정이 있을 때만 호출합니다.
+- 에이전트마다 별도 호출과 별도 지침을 씁니다(현재 Server Agent 지침). 공통 지침에 실제 에이전트 이름과 담당 범위를 적어, 다른 분야는 그 이름으로만 언급하게 합니다. 모델 해석은 경고·심각 판정이 있을 때만 호출합니다.
 - 원인 후보는 여러 관측값을 연결한 해석이어야 하며, 판정된 이상 징후를 반복하거나 위험만 설명하는 문장은 지침에서 금지합니다(위험 확인은 추가 확인으로). 이 구분은 지침으로만 유도하므로 개발 서버 결과로 계속 확인합니다.
 - 도구 사용 분석(모델이 조회 도구를 직접 호출하는 방식)은 채택하지 않았습니다. 조회는 항상 코드의 도구 계층이 수행합니다.
 

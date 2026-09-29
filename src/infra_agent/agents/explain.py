@@ -27,12 +27,17 @@ from infra_agent.schemas import (
     Finding,
     FindingKind,
     JudgementBasis,
+    RejectedHypothesis,
     Severity,
 )
+from infra_agent.security import redact
 
 MAX_HYPOTHESES = 5
 MAX_NEXT_CHECKS = 3
-_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?")
+"""문장 속 수치. 영문자에 붙은 숫자(k3d, p99)는 이름의 일부로 보고 검사하지 않습니다."""
+_OBSERVED_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?(?![A-Za-z0-9])")
+"""관측 데이터 속 독립된 수치. 이름 안의 숫자(k3d의 3)는 근거 수치로 인정하지 않습니다."""
 _NORMALIZE_RE = re.compile(r"[\s\W_]+")
 MODEL_CHECK_PREFIX = "(모델 제안) "
 
@@ -82,6 +87,7 @@ class Explanation:
     hypotheses: list[Finding] = field(default_factory=list)
     next_checks: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+    rejected: list[RejectedHypothesis] = field(default_factory=list)
     llm_calls: int = 0
 
 
@@ -101,9 +107,18 @@ def is_duplicate_check(candidate: str, existing: list[str]) -> bool:
     return False
 
 
+def ungrounded_numbers(statement: str, observed: str) -> list[str]:
+    """관측 데이터에 같은 값으로 없는 수치 목록 (순서 유지, 중복 제거).
+
+    값으로 비교하므로 95와 95.0은 같게 봅니다. 단위 환산·계산한 값은 인정하지 않습니다.
+    """
+    known = {float(n) for n in _OBSERVED_NUMBER_RE.findall(observed)}
+    return [n for n in dict.fromkeys(_NUMBER_RE.findall(statement)) if float(n) not in known]
+
+
 def numbers_grounded(statement: str, observed: str) -> bool:
     """문장 속 모든 수치가 관측 데이터 문자열에 그대로 있는지 확인합니다."""
-    return all(num in observed for num in _NUMBER_RE.findall(statement))
+    return not ungrounded_numbers(statement, observed)
 
 
 class AgentExplainer:
@@ -149,11 +164,23 @@ class AgentExplainer:
             return out
 
         known = {e.evidence_id for e in result.evidence}
-        rejected = 0
         for h in parsed.hypotheses:
             ids = tuple(dict.fromkeys(h.evidence_ids))
-            if not ids or not set(ids) <= known or not numbers_grounded(h.statement, observed):
-                rejected += 1
+            reasons: list[str] = []
+            unknown = [i for i in ids if i not in known]
+            if not ids or unknown:
+                reasons.append("근거 ID 불일치: " + (", ".join(unknown) or "(없음)"))
+            missing = ungrounded_numbers(h.statement, observed)
+            if missing:
+                reasons.append("관측 데이터에 없는 수치: " + ", ".join(missing))
+            if reasons:
+                out.rejected.append(
+                    RejectedHypothesis(
+                        statement=redact(h.statement.strip()),
+                        evidence_ids=tuple(redact(i) for i in ids),
+                        reasons=tuple(redact(r) for r in reasons),
+                    )
+                )
                 continue
             out.hypotheses.append(
                 Finding(
@@ -165,9 +192,13 @@ class AgentExplainer:
                     confidence=Confidence(h.confidence),
                 )
             )
-        if rejected:
+        if out.rejected:
+            by_id = sum(any(r.startswith("근거 ID") for r in x.reasons) for x in out.rejected)
+            by_num = sum(any(r.startswith("관측 데이터") for r in x.reasons) for x in out.rejected)
             out.limitations.append(
-                f"모델이 제시한 원인 후보 {rejected}건은 근거 ID 또는 수치 검증에 실패해 제외함"
+                f"모델이 제시한 원인 후보 {len(out.rejected)}건은 검증에 실패해 제외함 "
+                f"(근거 ID 불일치 {by_id}건, 관측 데이터에 없는 수치 {by_num}건; "
+                "원문은 --show-queries 또는 --json에서 확인)"
             )
         seen = list(result.next_checks)
         for check in parsed.next_checks:

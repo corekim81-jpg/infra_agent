@@ -237,6 +237,14 @@ class Usage(_Model):
     elapsed_ms: int = Field(default=0, ge=0)
 
 
+class RejectedHypothesis(_Model):
+    """검증에 실패해 답변에서 제외한 모델 원인 후보 (진단용, 사실·추정으로 쓰지 않음)."""
+
+    statement: str
+    evidence_ids: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = Field(min_length=1)
+
+
 class AgentResult(_Model):
     task_id: str
     agent: AgentName
@@ -247,6 +255,8 @@ class AgentResult(_Model):
     next_checks: tuple[str, ...] = ()
     errors: tuple[ErrorInfo, ...] = ()
     usage: Usage = Usage()
+    rejected_hypotheses: tuple[RejectedHypothesis, ...] = ()
+    """검증 실패로 제외한 모델 원인 후보. 답변 본문에는 넣지 않고 진단 출력에만 사용."""
 
     @model_validator(mode="after")
     def _evidence_refs(self) -> Self:

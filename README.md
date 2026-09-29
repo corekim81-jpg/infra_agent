@@ -187,7 +187,8 @@ infra-agent catalog --config config/local.yaml --execute
 # 질문 응답 (Server Agent). llm.provider가 claude_agent_sdk면 모델 사용, --no-llm이면 모델 없이
 infra-agent ask --config config/local.yaml "현재 서버 상태가 어때?"
 infra-agent ask --config config/local.yaml "최근 30분 동안 CPU나 메모리가 비정상적으로 증가한 서버가 있어?"
-#   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --show-queries  --json  --no-llm
+#   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --json  --no-llm
+#         --show-queries (조회식과, 검증에 실패해 제외된 모델 원인 후보를 진단용으로 표시)
 
 # 테스트
 python -m pytest -m "not live"

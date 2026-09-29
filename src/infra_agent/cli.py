@@ -95,7 +95,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--node", default=None, help="대상 노드")
     ask.add_argument("--pod", default=None, help="대상 Pod")
     ask.add_argument("--json", action="store_true", help="답변을 JSON으로 출력")
-    ask.add_argument("--show-queries", action="store_true", help="근거에 실행한 조회식 표시")
+    ask.add_argument(
+        "--show-queries",
+        action="store_true",
+        help="근거에 실행한 조회식과 제외된 모델 원인 후보(진단용) 표시",
+    )
     ask.add_argument(
         "--no-llm", action="store_true", help="모델을 호출하지 않고 규칙·코드 판정만 사용"
     )
@@ -299,6 +303,11 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                 "data_policy": bundle.data_policy,
             },
             "answer": bundle.answer.model_dump(mode="json"),
+            "rejected_hypotheses": [
+                {"agent": r.agent.value, **x.model_dump(mode="json")}
+                for r in bundle.results
+                for x in r.rejected_hypotheses
+            ],
         }
         print(redact(json.dumps(payload, ensure_ascii=False, indent=2)))
     else:
