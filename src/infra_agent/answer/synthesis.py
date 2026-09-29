@@ -50,7 +50,7 @@ def _severity_counts(findings: Sequence[Finding]) -> str:
 def _summary(
     facts: Sequence[Finding], results: Sequence[AgentResult], interp: Interpretation
 ) -> str:
-    if results and all(r.status is AgentStatus.FAILED for r in results):
+    if results and all(r.status in (AgentStatus.FAILED, AgentStatus.SKIPPED) for r in results):
         return "조회에 실패해 상태를 판단하지 못했습니다. 한계와 오류 내용을 확인하세요."
     if not results:
         return "요청한 분야를 분석할 수 있는 에이전트가 아직 없어 답할 수 없습니다."
@@ -122,8 +122,11 @@ def synthesize(
         for d in sorted(interp.unsupported_domains)
     ]
     for r in results:
+        reason = f" ({r.errors[0].message})" if r.errors else ""
         if r.status is AgentStatus.FAILED:
-            unverified.append(f"{r.agent.value} 에이전트: 조회 실패로 확인하지 못함")
+            unverified.append(f"{r.agent.value} 에이전트: 실패로 확인하지 못함{reason}")
+        elif r.status is AgentStatus.SKIPPED:
+            unverified.append(f"{r.agent.value} 에이전트: 실행하지 않음{reason}")
     next_checks = list(dict.fromkeys(x for r in results for x in r.next_checks))
     return FinalAnswer(
         request_id=request_id,

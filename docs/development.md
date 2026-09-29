@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 6단계 완료, 7단계 준비.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15)이 있습니다.
-> Server 외 분야 에이전트와 병렬 실행기는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 7단계 완료, 8단계 준비.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19)가 있습니다.
+> Server 외 분야 에이전트는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -72,9 +72,9 @@ infra_agent/
 │  ├─ tools/                    # 읽기 전용 도구 정의, 에이전트별 허용 목록
 │  ├─ units.py                  # 단위 표시 형식 (답변·모델 관측 데이터 공통)
 │  ├─ analysis/                 # 기준 구간 비교, 임계값 판정 등 결정적 분석
-│  ├─ agents/                   # coordinator, server, network, db, service, kubernetes
+│  ├─ agents/                   # base(공통 인터페이스), server, (이후) network, db, service, kubernetes
 │  │  └─ prompts.py             # 역할별 지침
-│  ├─ orchestration/            # 실행 계획(DAG), 실행기, 예산·타임아웃
+│  ├─ orchestration/            # 질문 해석, 실행 계획(plan), 실행기(executor), runner
 │  ├─ answer/                   # 결과 종합, 근거 검증, 답변 렌더링
 │  └─ interfaces/               # cli, (이후) http api
 ├─ tests/
@@ -143,7 +143,7 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 4 | 조회 카탈로그 v1 (otel-demo) | `config/catalog/otel-demo.yaml` (노드·컨테이너·재시작·hubble·PostgreSQL·커넥션 풀) | 확인 지표의 라벨·단위 검토, `evidence.status` 갱신 | 3 | 완료 (#9, PR #10; 실행 점검 오류 0, live 7건 통과) |
 | 5 | Server Agent (모델 없이) | k3d 노드·Pod·컨테이너 CPU·메모리 분석, 기준 구간 비교, 템플릿 답변, CLI | "현재 서버 상태", "30분 전 대비 증가" 질문에 근거·범위·한계 포함 답변 (가상 + live) | 4 | 완료 (#11, PR #12; 개발 서버 `ask` 실행·live 9건 통과 2026-09-29) |
 | 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 완료 (#15, PR #16; 개발 서버 모델 live 3건 통과 2026-09-29. 관측 표시값 보완 #17) |
-| 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 계획 |
+| 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 완료 (#19, PR #20; 개발 서버 live 12건 통과 2026-09-29) |
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 계획 |
 | 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트, 권한 점검, `k8s_*` 도구 | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 계획 |
 | 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 계획 |

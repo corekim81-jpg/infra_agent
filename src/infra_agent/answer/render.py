@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from infra_agent.orchestration.executor import TaskRun
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.orchestration.runner import AnswerBundle
-from infra_agent.schemas import Intent, Severity, TimeRange
+from infra_agent.schemas import AgentStatus, Intent, Severity, TimeRange
 
 _INTENT = {
     Intent.STATUS: "현재 상태 조회",
@@ -31,6 +32,19 @@ def _method(interp: Interpretation) -> str:
     if interp.method == "model":
         return "모델"
     return f"규칙 기반 ({interp.method_note})" if interp.method_note else "규칙 기반"
+
+
+_STATUS = {
+    AgentStatus.SUCCESS: "성공",
+    AgentStatus.PARTIAL: "부분 성공",
+    AgentStatus.FAILED: "실패",
+    AgentStatus.SKIPPED: "실행 안 함",
+}
+
+
+def _run_text(run: TaskRun) -> str:
+    after = f", {'·'.join(run.depends_on)} 이후" if run.depends_on else ""
+    return f"{run.agent} {_STATUS[run.status]} {run.elapsed_ms / 1000:.1f}초{after}"
 
 
 def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
@@ -121,4 +135,6 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
     else:
         model = "모델 호출 없음"
     lines.append(f"(요청 ID {ctx.request_id}, {model}, 분석 조회 {calls}회)")
+    if bundle.runs:
+        lines.append(f"(에이전트 실행: {', '.join(_run_text(r) for r in bundle.runs)})")
     return "\n".join(lines)

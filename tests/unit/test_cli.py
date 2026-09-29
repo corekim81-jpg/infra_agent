@@ -213,4 +213,6 @@ def test_ask_renders_answer(
 
     assert seen["target_overrides"] == {TargetKind.NAMESPACE: "otel-demo"}
     assert main(["ask", "상태", "--config", str(EXAMPLE), "--json"]) == 0
-    assert '"intent": "status"' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert '"intent": "status"' in out
+    assert '"execution": [' in out

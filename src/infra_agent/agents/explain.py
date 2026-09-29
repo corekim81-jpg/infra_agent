@@ -11,12 +11,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from infra_agent.agents.base import remaining_seconds
 from infra_agent.config.settings import DataPolicy
 from infra_agent.llm.base import LLMClient, LLMError, LLMRequest
 from infra_agent.llm.policy import DATA_GUARD, MAX_ROWS, build_observations, truncated_evidence
@@ -31,6 +33,11 @@ from infra_agent.schemas import (
     Severity,
 )
 from infra_agent.security import redact
+
+MIN_EXPLAIN_SECONDS = 5.0
+"""에이전트 제한 시간 안에 남은 시간이 이보다 적으면 모델 해석을 생략합니다."""
+RESERVE_SECONDS = 2.0
+"""모델 해석 뒤 결과를 정리할 여유 시간."""
 
 MAX_HYPOTHESES = 5
 MAX_NEXT_CHECKS = 3
@@ -151,12 +158,25 @@ class AgentExplainer:
             "위 관측 데이터의 이상 징후에 대해 원인 후보(hypotheses)와 "
             "추가 확인 사항(next_checks)을 JSON으로 제시하세요."
         )
+        remaining = remaining_seconds()
+        budget = None if remaining is None else remaining - RESERVE_SECONDS
+        if budget is not None and budget < MIN_EXPLAIN_SECONDS:
+            out.limitations.append("모델 해석 생략: 에이전트 제한 시간 안에 남은 시간이 부족함")
+            return out
         out.llm_calls = 1
+        request = LLMRequest(
+            purpose=self._purpose, system=self._system, prompt=prompt, schema=SCHEMA
+        )
         try:
-            response = await self._llm.complete(
-                LLMRequest(purpose=self._purpose, system=self._system, prompt=prompt, schema=SCHEMA)
-            )
+            response = await asyncio.wait_for(self._llm.complete(request), timeout=budget)
             parsed = _Explanation.model_validate(response.data or {})
+        except TimeoutError:
+            waited = f"({budget:.0f}초)" if budget is not None else ""
+            out.limitations.append(
+                f"모델 해석 생략: 에이전트 제한 시간 안에 응답이 없음{waited}. "
+                "코드 판정 결과는 그대로 사용"
+            )
+            return out
         except LLMError as exc:
             out.limitations.append(f"모델 해석 생략: {exc.message}")
             return out
