@@ -64,6 +64,8 @@ def _evidence_window(e: EvidenceSummary, at: datetime) -> str:
     evidence_id = str(e.key_values.get("id", ""))
     if e.source is DataSourceKind.TEMPO:
         suffix = " 구간 검색"
+    elif e.source is DataSourceKind.LOKI:
+        suffix = " 구간 조회" if "_samples" in evidence_id else " 구간 집계"
     elif evidence_id.endswith(("@window_avg", "@baseline_avg")):
         suffix = " 평균"
     elif "@series" in evidence_id:

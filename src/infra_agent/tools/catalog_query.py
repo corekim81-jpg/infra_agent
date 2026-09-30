@@ -115,6 +115,7 @@ class CatalogQueryTool:
         self._timeout = timeout_seconds
         self._freshness_cache: dict[str, float | None] = {}
         self._coverage_cache: dict[tuple[str, str], int | None] = {}
+        self._bounds_cache: dict[tuple[str, str], float | None] = {}
 
     def item(self, key: str) -> CatalogItem:
         item = self._catalog.items.get(key)
@@ -338,6 +339,42 @@ class CatalogQueryTool:
                 unit=item.unit,
             )
         )
+
+    async def max_bucket_bound(
+        self, key: str, targets: Mapping[TargetKind, str], at: datetime
+    ) -> float | None:
+        """히스토그램 항목의 가장 큰 유한 버킷 경계(`le`). 확인하지 못하면 None.
+
+        `histogram_quantile` 결과가 이 값과 같으면 실제 분위수는 그 이상(마지막 +Inf 구간)일 수
+        있어, 값을 그대로 "지연 N초"로 보고하지 않기 위해 씁니다.
+        """
+        item = self.item(key)
+        metric = next((m for m in item.requires_metrics if m.endswith("_bucket")), None)
+        if metric is None:
+            return None
+        selector, unsupported = item.selector_for(targets)
+        if unsupported:
+            return None
+        cache_key = (metric, selector)
+        if cache_key not in self._bounds_cache:
+            if not self._budget.take():
+                return None
+            expr = f"count by (le) ({metric}{{{selector}}})"
+            try:
+                result = await asyncio.wait_for(self._prom.query(expr, at), timeout=self._timeout)
+            except (TimeoutError, DataSourceError):
+                self._bounds_cache[cache_key] = None
+            else:
+                bounds = []
+                for s in result.samples:
+                    try:
+                        value = float(s.labels.get("le", ""))
+                    except ValueError:
+                        continue
+                    if math.isfinite(value):
+                        bounds.append(value)
+                self._bounds_cache[cache_key] = max(bounds) if bounds else None
+        return self._bounds_cache[cache_key]
 
     async def coverage(
         self, key: str, targets: Mapping[TargetKind, str], at: datetime

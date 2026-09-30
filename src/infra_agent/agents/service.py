@@ -206,17 +206,17 @@ class ServiceAgent:
             if ctx.intent in (Intent.COMPARE, Intent.ANOMALY) and ctx.baseline_range is not None:
                 await self._error_increase(ctx, targets, col, state)
                 await self._latency_increase(ctx, targets, col)
-        await self._dependencies(ctx, targets, col)
+        await self._dependencies(ctx, targets, col, state)
         focus = sorted(state.focus.values(), key=lambda f: -f.ratio)[: self._cfg.detail_services]
-        if focus:
-            for item in focus:
-                if not self._time_for_detail(col, f"{item.service} 로그·트레이스 상세"):
-                    break
-                await self._detail(item, ctx, targets, col)
-        elif any(w in ctx.question.lower() for w in LOG_WORDS) and self._time_for_detail(
-            col, "로그·트레이스 개요"
-        ):
-            await self._overview(ctx, targets, col, state)
+        detailed: list[str] = []
+        for item in focus:
+            if not self._time_for_detail(col, f"{item.service} 로그·트레이스 상세"):
+                break
+            await self._detail(item, ctx, targets, col)
+            detailed.append(item.service)
+        asks_logs = any(w in ctx.question.lower() for w in LOG_WORDS)
+        if asks_logs and self._time_for_detail(col, "로그·트레이스 개요"):
+            await self._overview(ctx, targets, col, state, skip=detailed)
         result = finish(task, self.name, col)
         return await with_explanation(result, self._explainer, ctx)
 
@@ -418,11 +418,22 @@ class ServiceAgent:
         warn = self._cfg.latency_p95_warning_seconds
         items.sort(key=lambda x: -x[1])
         exceeded = [x for x in items if x[1] >= warn]
+        top_bound = (
+            await self._tool.max_bucket_bound(check.key, targets, ctx.time_range.end)
+            if exceeded
+            else None
+        )
+        saturated = 0
         for target, value in exceeded[: self._cfg.top_n]:
+            shown = fmt_value(value, "seconds")
+            if top_bound is not None and value >= top_bound * (1 - 1e-9):
+                # 분위수가 마지막 유한 버킷 경계에 걸림 → 실제 값은 그 이상
+                shown = f"{shown} 이상(히스토그램 최대 구간)"
+                saturated += 1
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,
-                    statement=f"{check.label}(현재): {target.name} {fmt_value(value, 'seconds')} "
+                    statement=f"{check.label}(현재): {target.name} {shown} "
                     f"(기준 {fmt_value(warn, 'seconds')} 이상)",
                     severity=Severity.WARNING,
                     targets=(target,),
@@ -433,6 +444,13 @@ class ServiceAgent:
         if len(exceeded) > self._cfg.top_n:
             col.limit(
                 f"{check.key}: 기준 초과 {len(exceeded)}개 중 상위 {self._cfg.top_n}개만 표시"
+            )
+        if saturated:
+            col.limit(
+                f"{check.key}: p95가 히스토그램 최대 유한 구간 경계"
+                f"({fmt_value(top_bound or 0.0, 'seconds')})와 같은 대상 {saturated}개는 "
+                "실제 값이 그보다 클 수 있음 (스트리밍처럼 오래 열린 호출이면 지연이 아니라 "
+                "연결 유지 시간일 수 있음)"
             )
         if exceeded or not is_fresh(result, self._cfg):
             return
@@ -573,7 +591,11 @@ class ServiceAgent:
     # ------------------------------------------------------------------ 서비스 간 호출
 
     async def _dependencies(
-        self, ctx: AnalysisContext, targets: Mapping[TargetKind, str], col: Collector
+        self,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+        state: _State,
     ) -> None:
         total = await fetch_evidence(
             self._tool,
@@ -629,6 +651,9 @@ class ServiceAgent:
                     basis=JudgementBasis.THRESHOLD,
                 )
             )
+            # 실패를 응답한 쪽(server)이 트레이스 지표가 있는 서비스면 로그·트레이스 상세 대상
+            if server in state.rates and server not in state.focus:
+                state.focus[server] = _Focus(server, ratio, f"{client} → {server} 호출 실패")
         if exceeded or not (is_fresh(total, self._cfg) and is_fresh(failed, self._cfg)):
             return
         worst = max(ratios.items(), key=lambda kv: kv[1])
@@ -711,6 +736,12 @@ class ServiceAgent:
             col.limit(f"{focus.service}: 오류율 시계열이 없어 분석 구간 전체로 로그·트레이스를 봄")
             return ctx.time_range
         peak = max(server, key=lambda r: float(r["value"]))  # type: ignore[arg-type]
+        if float(peak["value"]) <= 0:  # type: ignore[arg-type]
+            col.limit(
+                f"{focus.service}: 분석 구간에 SERVER span 오류율이 0보다 큰 시점이 없어 "
+                "구간 전체로 로그·트레이스를 봄"
+            )
+            return ctx.time_range
         peak_at = datetime.fromisoformat(str(peak["peak_at"]))
         half = timedelta(seconds=self._cfg.peak_window_seconds / 2)
         start = max(ctx.time_range.start, peak_at - half)
@@ -873,33 +904,42 @@ class ServiceAgent:
         targets: Mapping[TargetKind, str],
         col: Collector,
         state: _State,
+        skip: list[str],
     ) -> None:
-        """질문이 로그·트레이스를 묻지만 기준을 넘는 오류 서비스가 없을 때.
+        """질문이 로그·트레이스를 물을 때의 분석 구간 개요와, 남은 상세 자리 채우기.
 
         1. 분석 구간의 서비스별 오류 키워드 로그 수와 오류 트레이스(루트 서비스별) 개요
-        2. 오류 로그가 많은 서비스(없으면 SERVER 외 span 오류가 있는 서비스) 상위
-           `detail_services`개에 대해 로그 샘플·오류 트레이스·trace_id 연결
+        2. 상세 자리(`detail_services`)가 남으면, 오류 로그가 많은 서비스(다음으로 SERVER 외 span
+           오류가 있는 서비스)의 로그 샘플·오류 트레이스·trace_id 연결을 분석 구간 전체로 확인.
+           트레이스 지표가 없는 로그 출처(수집기·클러스터 객체 로그 등)는 서비스가 아니므로 제외
         """
         window = ctx.time_range
         span = f"{_hm(window.start)}~{_hm(window.end)}"
-        col.limit(
-            "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스 기준으로 "
-            f"{span} 구간의 로그·트레이스를 확인함"
-        )
         log_counts = await self._overview_logs(window, targets, col, span)
         await self._overview_traces(window, col, span)
-        candidates = [name for name, n in log_counts if n > 0]
-        candidates += [s for s, _ in sorted(state.other_errors.items(), key=lambda x: -x[1])]
-        picked = list(dict.fromkeys(candidates))[: self._cfg.detail_services]
+        slots = self._cfg.detail_services - len(skip)
+        if slots <= 0:
+            return
+        by_logs = [name for name, n in log_counts if n > 0]
+        others = sorted(state.other_errors.items(), key=lambda x: -x[1])
+        candidates = list(dict.fromkeys(by_logs + [s for s, _ in others]))
+        non_service = [s for s in candidates if s not in state.rates]
+        if non_service:
+            col.limit(
+                "트레이스 지표가 없는 로그 출처는 서비스 상세 확인에서 제외함: "
+                + ", ".join(non_service[: self._cfg.top_n])
+            )
+        picked = [s for s in candidates if s in state.rates and s not in skip][:slots]
+        if picked and not skip:
+            col.limit(
+                "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스 기준으로 "
+                f"{span} 구간의 로그·트레이스를 확인함"
+            )
         for service in picked:
             if not self._time_for_detail(col, f"{service} 로그·트레이스 확인"):
                 break
             service_targets = {**targets, TargetKind.SERVICE: service}
             log_ids = await self._logs_for(service, window, service_targets, col)
-            if service not in state.rates:
-                # spanmetrics에 없는 로그 출처(예: 수집기·클러스터 로그)는 트레이스를 검색하지 않음
-                col.limit(f"{service}: 트레이스 지표가 없는 로그 출처라 트레이스를 검색하지 않음")
-                continue
             trace_ids = await self._traces_for(service, window, col, expect_errors=False)
             self._link(service, window, log_ids, trace_ids, col)
 

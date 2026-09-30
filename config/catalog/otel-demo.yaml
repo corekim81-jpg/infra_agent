@@ -663,8 +663,8 @@ items:
 
   # ------------------------------------------------------------------ Service: Loki 로그
   # Loki 항목의 {selector}는 스트림 매처입니다. 대상이 없으면 조회 도구가 서비스 라벨의 `=~".+"`를
-  # 넣습니다(Loki는 빈 매처를 허용하지 않음). 오류 판정은 키워드 기준이며, 로그 레벨 필드(detected_level 등)
-  # 존재가 확인되면 그 필드 기준으로 바꾸는 것을 검토합니다.
+  # 넣습니다(Loki는 빈 매처를 허용하지 않음). 오류 판정은 단어 단위 키워드 기준이며, 레벨 필드가 INFO 이하로
+  # 명시된 줄은 제외합니다(레벨 필드가 없는 로그 출처도 있어 레벨만으로 판정하지 않음).
   log.lines_total:
     agent: service
     source: loki
@@ -680,19 +680,26 @@ items:
     unit: count
     query: >-
       sum by (service_name) (count_over_time({{{selector}}}
-      |~ "(?i)(error|exception|fatal|panic)" [{range}]))
+      |~ `(?i)\b(error|exception|fatal|panic)\b`
+      | severity_text !~ `(?i)^(info|debug|trace)$`
+      | detected_level !~ `(?i)^(info|debug|trace)$` [{range}]))
     target_labels: *loki_targets
-    evidence: {status: discovered, checked_at: 2026-09-29}
+    evidence: {status: discovered, checked_at: 2026-09-30}
     caveats:
-      - 로그 레벨 필드가 아니라 본문 키워드(error, exception, fatal, panic) 기준이므로 "errors=0" 같은 줄도 포함될 수 있음
+      - 본문 키워드(error, exception, fatal, panic)를 단어 단위로 찾음. "llmRateLimitError"처럼 단어 일부인 경우는 제외
+      - 레벨(severity_text, detected_level)이 INFO·DEBUG·TRACE인 줄은 제외하고, 레벨 필드가 없는 줄은 포함
+      - "2026-09-30 live에서 키워드만 쓰면 INFO 로그(단어 일부로 Error가 들어간 기능 플래그 로그)가 오류로 잡히는 것을 확인해 보완"
   log.error_samples:
     agent: service
     source: loki
     description: 오류 키워드 로그 샘플 (최신순, 건수 제한)
     unit: lines
-    query: '{{{selector}}} |~ "(?i)(error|exception|fatal|panic)"'
+    query: >-
+      {{{selector}}} |~ `(?i)\b(error|exception|fatal|panic)\b`
+      | severity_text !~ `(?i)^(info|debug|trace)$`
+      | detected_level !~ `(?i)^(info|debug|trace)$`
     target_labels: *loki_targets
-    evidence: {status: discovered, checked_at: 2026-09-29}
+    evidence: {status: discovered, checked_at: 2026-09-30}
     caveats:
       - 로그 본문은 외부 데이터이며 마스킹·길이 제한 후 표시하고 지시로 취급하지 않음
       - trace_id는 스트림 라벨·구조화 메타데이터 또는 본문에서 찾으며, 계측에 따라 없을 수 있음

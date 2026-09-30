@@ -112,6 +112,10 @@ def _red(ctx: AnalysisContext, fake: FakeBackend, *, cart_error: float = 0.25) -
         ],
     )
     fake.add(
+        "count by (le) (traces_spanmetrics_latency_bucket{})",
+        [({"le": le}, 3.0) for le in ("0.1", "1", "10", "+Inf")],
+    )
+    fake.add(
         _expr("service.dependency_request_rate", ctx),
         [({"client": "frontend", "server": "cart", "connection_type": ""}, 2.0)],
     )
@@ -311,6 +315,7 @@ async def test_overview_when_question_asks_for_logs() -> None:
     ctx = _ctx(question="최근 로그와 트레이스 보여줘")
     fake = FakeBackend()
     _red(ctx, fake, cart_error=0.0)  # SERVER span 오류 없음, CLIENT span 오류 90%
+    fake.add(_expr("service.dependency_failed_rate", ctx), [])  # 호출 실패도 없음
     window = ctx.time_range
     everyone = 'service_name=~".+"'
     events = "kubernetes-cluster"  # 트레이스 지표가 없는 로그 출처 (가상)
@@ -354,13 +359,17 @@ async def test_overview_when_question_asks_for_logs() -> None:
         for t in texts
     )
     assert any(t.startswith("오류 트레이스 (") and "frontend 1건" in t for t in texts)
-    # 오류 로그가 많은 서비스 기준으로 로그 샘플·트레이스를 보고 같은 trace_id를 연결
-    assert any(t.startswith(f"오류 키워드 로그 ({events}, ") for t in texts)
+    # 오류 로그가 많은 서비스 기준으로 로그 샘플·트레이스를 보고 같은 trace_id를 연결.
+    # 트레이스 지표가 없는 로그 출처는 서비스가 아니므로 상세 확인에서 제외
+    assert not any(t.startswith(f"오류 키워드 로그 ({events}, ") for t in texts)
     assert any(t.startswith("오류 키워드 로그 (cart, ") for t in texts)
     assert any(
         t.startswith("오류 로그와 오류 트레이스가 같은 trace_id로 연결됨 (cart") for t in texts
     )
-    assert any(f"{events}: 트레이스 지표가 없는 로그 출처" in x for x in result.limitations)
+    assert any(
+        x == f"트레이스 지표가 없는 로그 출처는 서비스 상세 확인에서 제외함: {events}"
+        for x in result.limitations
+    )
     assert any(x.startswith("기준을 넘거나 증가한 오류 서비스가 없어") for x in result.limitations)
     assert not any(q == build_traceql(events, errors=True) for _, q in fake.calls)
     ids = [e.evidence_id for e in result.evidence]
@@ -440,3 +449,49 @@ async def test_detail_skipped_when_agent_time_is_short() -> None:
     assert not any(f.statement.startswith("오류율 최고 시점") for f in result.findings)
     assert any("남은 시간이 부족해 cart 로그·트레이스 상세" in x for x in result.limitations)
     assert not any(path.startswith("/loki") for path, _ in fake.calls)
+
+
+async def test_histogram_saturation_is_reported_as_lower_bound() -> None:
+    ctx = _ctx()
+    fake = FakeBackend()
+    _red(ctx, fake, cart_error=0.0)
+    fake.add(_expr("service.dependency_failed_rate", ctx), [])
+    fake.add(
+        _expr("service.dependency_latency_p95", ctx),
+        [({"client": "ad", "server": "flagd"}, 12.8), ({"client": "cart", "server": "redis"}, 2.0)],
+    )
+    fake.add(
+        "count by (le) (traces_service_graph_request_server_seconds_bucket{})",
+        [({"le": le}, 5.0) for le in ("0.1", "1.6", "12.8", "+Inf")],
+    )
+    result = await _run(ctx, fake, logs=False, traces=False)
+    texts = [f.statement for f in result.findings]
+    assert (
+        "서비스 간 호출 지연 p95(서버 측)(현재): ad → flagd 12.8초 이상(히스토그램 최대 구간) "
+        "(기준 1초 이상)"
+    ) in texts
+    assert "서비스 간 호출 지연 p95(서버 측)(현재): cart → redis 2초 (기준 1초 이상)" in texts
+    assert any("최대 유한 구간 경계(12.8초)와 같은 대상 1개" in x for x in result.limitations)
+
+
+async def test_failing_call_path_focuses_on_server_side() -> None:
+    ctx = _ctx(question="오류 로그와 트레이스 연결해줘")
+    fake = FakeBackend()
+    _red(ctx, fake, cart_error=0.0)  # 오류율 기준 초과 없음, frontend → cart 호출 실패 15%
+    window = ctx.time_range
+    sel = 'service_name="cart"'
+    fake.loki_metrics[_loki("log.lines_total", window, sel)] = [({"service_name": "cart"}, 100)]
+    fake.loki_metrics[_loki("log.error_lines", window, sel)] = [({"service_name": "cart"}, 0)]
+    fake.add_range(
+        _expr("service.error_ratio", ctx, sel='service="cart"'),
+        [({"service": "cart", "span_kind": SERVER}, [(PEAK, 0.0), (NOW, 0.0)])],
+    )
+    result = await _run(ctx, fake)
+    texts = [f.statement for f in result.findings]
+    # 호출 실패를 응답한 cart를 상세 대상으로 삼되, 오류율이 0뿐이면 "최고 시점"을 만들지 않음
+    assert not any(t.startswith("오류율 최고 시점") for t in texts)
+    assert any("0보다 큰 시점이 없어 구간 전체로" in x for x in result.limitations)
+    assert any(t.startswith("오류 키워드 로그 (cart, ") and "0건 / 전체 100건" in t for t in texts)
+    assert not any(
+        x.startswith("기준을 넘거나 증가한 오류 서비스가 없어") for x in result.limitations
+    )
