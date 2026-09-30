@@ -616,7 +616,7 @@ class ServiceAgent:
             col.suggest(
                 "지연이 늘어난 서비스의 DB 호출·서비스 간 호출 지연 비교 "
                 "(이번 답변의 DB 호출 span·서비스 간 호출 지연 항목, "
-                "DB Agent·Network Agent는 미구현)"
+                "DB 내부 지표는 DB Agent, Network Agent는 미구현)"
             )
 
     # ------------------------------------------------------------------ 서비스 간 호출

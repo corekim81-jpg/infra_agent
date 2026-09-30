@@ -162,8 +162,9 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 > - **Server Agent**: k3d 노드·Pod·컨테이너 자원
 > - **Kubernetes Agent**: 노드 조건, Pod phase, 재시작·OOM, 워크로드 복제 상태 (Prometheus 지표 기준. Pending 사유·종료 사유·이벤트는 아직 확인하지 않음)
 > - **Service Agent**: 서비스 요청량·오류율·p95 지연, 서비스 간 호출 실패·지연, DB 호출 span 지연, 오류 서비스의 오류율 최고 시점과 그 시간대 오류 로그(Loki)·오류 트레이스(Tempo)·같은 trace_id 연결, 지연 서비스의 지연 최고 시점과 그 시간대 느린 트레이스(Tempo)
+> - **DB Agent**: PostgreSQL 연결 사용률·데드락·롤백 비율·버퍼 캐시 적중률, 앱 커넥션 풀 사용률(사용 중 연결)·대기, DB 작업·DB 호출 span 지연(비교 질문이면 직전 구간 대비 증가), Valkey 키 퇴출·연결 거부·적중률 (수집된 지표 기준. 쿼리별 통계·실행 계획·잠금 대기는 수집되지 않아 확인하지 않음)
 >
-> 네트워크·DB 내부 지표 질문에는 "아직 분석하지 않음"으로 답합니다.
+> 네트워크 질문에는 "아직 분석하지 않음"으로 답합니다. "서비스가 느려진 이유가 네트워크인지 DB인지"처럼 서비스와 DB를 함께 물으면 Service Agent 다음에 DB Agent를 실행합니다.
 > 답변 끝에 실행한 에이전트와 결과(성공·실패·실행 안 함, 소요 시간)를 표시합니다.
 > 수치 판정은 항상 코드가 합니다. 모델(Claude Agent SDK, 선택)을 설정하면 질문 해석과 원인 후보(추정) 제안에 사용하며, 모델은 도구를 쓸 수 없습니다. 모델이 없거나 실패하면 규칙 기반으로 답합니다.
 
@@ -190,11 +191,12 @@ infra-agent discover --config config/local.yaml
 # 조회 카탈로그 검증 / 각 조회를 Prometheus에 실행해 점검
 infra-agent catalog --config config/local.yaml --execute
 
-# 질문 응답 (Server·Kubernetes·Service Agent). llm.provider가 claude_agent_sdk면 모델 사용, --no-llm이면 모델 없이
+# 질문 응답 (Server·Kubernetes·Service·DB Agent). llm.provider가 claude_agent_sdk면 모델 사용, --no-llm이면 모델 없이
 infra-agent ask --config config/local.yaml "현재 서버 상태가 어때?"
 infra-agent ask --config config/local.yaml "최근 30분 동안 CPU나 메모리가 비정상적으로 증가한 서버가 있어?"
 infra-agent ask --config config/local.yaml "Kubernetes에서 재시작하거나 Pending 상태인 Pod를 확인해 줘"
 infra-agent ask --config config/local.yaml "오류가 증가한 시간대의 로그와 트레이스를 연결해서 원인 후보를 알려줘"
+infra-agent ask --config config/local.yaml "DB 커넥션 풀이 부족하거나 쿼리가 느려진 징후가 있어?"
 #   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --json  --no-llm
 #         --show-queries (조회식과, 검증에 실패해 제외된 모델 원인 후보를 진단용으로 표시)
 

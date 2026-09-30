@@ -146,6 +146,7 @@
 - 대상: `otel-demo` 네임스페이스의 PostgreSQL 17.6, Valkey 9.0.1(`redis_*`로 수집).
 - PostgreSQL 직접 SQL 접속은 초기 필수 조건이 아닙니다.
 - 확인되지 않은 항목: MySQL, `pg_stat_statements`, 쿼리 실행 계획, 잠금 대기·잠금 그래프. 이 항목이 필요한 질문에는 한계와 필요한 수집 설정을 답변에 포함합니다.
+- DB Agent(#25)가 쓰는 값 중 개발 서버에서 아직 확인하지 않은 것: 커넥션 풀 상태 라벨 값(`db_client_connection_state`, `status`)에서 유휴 연결이 `idle`로 표시되는지, product-catalog의 최대 열린 연결 수(`db_sql_connection_max_open`)가 0(제한 없음)인지. 사용자 환경 live(`tests/live/test_live_db.py`)에서 결과가 없는 항목을 출력해 확인합니다.
 
 ## 4. 조회 카탈로그
 
@@ -217,7 +218,8 @@ $env:INFRA_AGENT_LIVE_TESTS = "1"; python -m pytest -m live
 
 ### 4.4 otel-demo 카탈로그와 점검
 
-> **구현됨 (#9):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 53개(Server 13, Kubernetes 11, Network 8, DB·캐시 14, Service 7). `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지 51개는 `discovered`입니다.
+> **구현됨 (#9, DB 항목 보완 #25):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 55개(Server 13, Kubernetes 11, Network 8, DB·캐시 16, Service 7)와 Loki 항목 3개. `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지는 `discovered`입니다.
+> #25에서 DB Agent용으로 바꾼 항목: 커넥션 풀 사용률 2개를 사용 중 연결 기준(상태 값 idle 제외)으로 변경, `db.pool_wait_rate`·`cache.valkey_evictions_rejections`를 구간 증가 수 항목(`db.pool_waits_increase`, `cache.valkey_evicted_increase`, `cache.valkey_rejected_increase`)으로 교체, `db.span_latency_p95` 추가(Service 항목과 같은 조회식).
 
 - 항목마다 `target_labels`(대상 종류 → 라벨 이름)를 두어, 에이전트가 대상(네임스페이스·Pod·서비스 등)을 selector로 바꿀 때 사용합니다. 항목이 지원하지 않는 대상은 `selector_for()`가 따로 반환하므로 답변의 한계로 표시해야 합니다.
 - 점검 명령:
@@ -228,7 +230,7 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 ```
 
   "결과 없음"은 오류가 아닙니다(예: 재시작이 없으면 `k8s.container_restarts_increase`는 비어 있음). "지표 없음"과 "오류"가 있으면 종료 코드 1을 반환합니다.
-- 조회식 문법은 로컬 Prometheus 3.5(빈 데이터)에서 53개 항목 × selector 유무 106건을 실행해 오류가 없음을 확인했습니다.
+- 조회식 문법은 로컬 Prometheus 3.5(빈 데이터)에서 확인했습니다: #9에서 53개 항목 × selector 유무 106건, #25에서 55개 항목 × selector 유무 × 구간(5m·1800s) 166건 모두 오류 없음.
 - **개발 서버 실행 점검(2026-09-29):** 정상 43, 결과 없음 10, 지표 없음 0, 오류 0.
   - 결과 없음 10건은 모두 "문제가 있을 때만 결과가 나오는" 조건형 조회입니다(`k8s.container_restarts_increase`, `k8s.container_oom_events`, `k8s.pod_phase`, `k8s.node_not_ready`, `k8s.node_pressure`, `k8s.deployment_unavailable`, `k8s.statefulset_unready`, `k8s.daemonset_unready`, `k8s.job_failed_pods`, `k8s.hpa_at_max`).
   - `network.tcp_flags_rate`가 워크로드 단위 집계에서 시계열 1.4만 개를 반환해 네임스페이스 단위로 줄였습니다.

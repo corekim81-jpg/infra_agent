@@ -18,9 +18,11 @@ from datetime import datetime, timedelta
 import httpx
 
 from infra_agent.agents.base import Agent
+from infra_agent.agents.db import DbAgent
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.kubernetes import KubernetesAgent
 from infra_agent.agents.prompts import (
+    DB_SYSTEM_PROMPT,
     KUBERNETES_SYSTEM_PROMPT,
     SERVER_SYSTEM_PROMPT,
     SERVICE_SYSTEM_PROMPT,
@@ -147,12 +149,21 @@ def _build_service(deps: AgentDeps) -> Agent:
     )
 
 
+def _build_db(deps: AgentDeps) -> Agent:
+    return DbAgent(
+        _tool(deps, AgentName.DB),
+        deps.settings.analysis,
+        _explainer(deps, AgentName.DB, DB_SYSTEM_PROMPT),
+    )
+
+
 AGENT_BUILDERS: Mapping[AgentName, Callable[[AgentDeps], Agent]] = {
     AgentName.SERVER: _build_server,
     AgentName.KUBERNETES: _build_kubernetes,
     AgentName.SERVICE: _build_service,
+    AgentName.DB: _build_db,
 }
-"""구현된 에이전트. 이후 DB·Network 에이전트를 여기에 추가합니다."""
+"""구현된 에이전트. 이후 Network 에이전트를 여기에 추가합니다."""
 
 
 def build_context(

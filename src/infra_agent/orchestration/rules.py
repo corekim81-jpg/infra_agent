@@ -23,7 +23,7 @@ InterpretMethod = Literal["rules", "model"]
 MAX_RANGE = timedelta(days=7)
 """개발 환경 Prometheus 보존 기간(1w) 기준 최대 조회 구간."""
 
-IMPLEMENTED_DOMAINS = frozenset({"server", "kubernetes", "service"})
+IMPLEMENTED_DOMAINS = frozenset({"server", "kubernetes", "service", "db"})
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "server": (
@@ -110,6 +110,13 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "redis",
         "캐시",
         "cache",
+        "커넥션 풀",
+        "pool",
+        "트랜잭션",
+        "transaction",
+        "롤백",
+        "rollback",
+        "sql",
     ),
     "service": (
         "서비스",
@@ -134,7 +141,20 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 COMPARE_KEYWORDS = ("비교", "직전", "달라", "변화", "전보다", "대비", "compare", "차이")
-ANOMALY_KEYWORDS = ("증가", "급증", "늘어", "늘었", "비정상", "이상 징후", "튀", "spike", "올라")
+ANOMALY_KEYWORDS = (
+    "증가",
+    "급증",
+    "늘어",
+    "늘었",
+    "비정상",
+    "이상 징후",
+    "튀",
+    "spike",
+    "올라",
+    "느려진",
+    "느려졌",
+)
+"""직전 구간 대비 변화를 묻는 단어 ("느려진"은 이전보다 느려졌다는 뜻이므로 비교 대상)."""
 
 # 한글 조사("1시간과")가 붙어도 인식하도록 \b 대신 영문자가 이어지지 않는 조건만 둡니다.
 _DURATION_RE = re.compile(r"(\d+)\s*(초|분|시간|일|s|m|h|d)(?![a-z])", re.IGNORECASE)
@@ -181,6 +201,11 @@ AMBIGUOUS_SERVER_WORDS = ("파드", "pod", "컨테이너", "container", "노드"
 Kubernetes 키워드가 있고 서버 분야가 이 단어로만 판별되면 서버 자원 분석을 붙이지 않습니다
 (예: "재시작하거나 Pending 상태인 Pod" → Kubernetes만)."""
 TARGET_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
+
+GENERIC_SLOW_WORDS = ("느려", "느린", "slow", "지연", "latency")
+"""서비스 응답과 DB 쿼리 모두에 쓰이는 단어.
+DB 키워드가 있고 서비스 분야가 이 단어로만 판별되면 서비스 분석을 붙이지 않습니다
+(예: "커넥션 풀이 부족하거나 쿼리가 느려진 징후" → DB만)."""
 
 
 def finalize(
@@ -265,6 +290,10 @@ def interpret(
         specific = [w for w in DOMAIN_KEYWORDS["server"] if w not in AMBIGUOUS_SERVER_WORDS]
         if not any(w in text for w in specific):
             domains.discard("server")
+    if {"db", "service"} <= domains:
+        specific = [w for w in DOMAIN_KEYWORDS["service"] if w not in GENERIC_SLOW_WORDS]
+        if not any(w in text for w in specific):
+            domains.discard("service")
     return finalize(
         intent=intent,
         duration=_duration(text),

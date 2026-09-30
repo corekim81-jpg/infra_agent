@@ -61,9 +61,19 @@ def test_overrides_win() -> None:
 def test_unsupported_domains_reported() -> None:
     r = interpret("서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘", NOW, D30)
     assert {"service", "network", "db"} <= r.domains
-    assert r.unsupported_domains == {"network", "db"}  # Service는 구현됨(#23)
+    assert r.unsupported_domains == {"network"}  # Service(#23)·DB(#25)는 구현됨
+    assert r.intent is Intent.ANOMALY  # "느려진" → 직전 구간 대비 비교
     r2 = interpret("오류가 증가한 시간대의 로그와 트레이스를 연결해서 원인 후보를 알려줘", NOW, D30)
     assert r2.domains == {"service"} and r2.intent is Intent.ANOMALY
+
+
+def test_db_questions_do_not_pull_in_service() -> None:
+    r = interpret("DB 커넥션 풀이 부족하거나 쿼리가 느려진 징후가 있어?", NOW, D30)
+    assert r.domains == {"db"}  # "느려진"만으로는 서비스 분석을 붙이지 않음
+    assert r.intent is Intent.ANOMALY and not r.unsupported_domains
+    assert interpret("valkey 캐시 상태는?", NOW, D30).domains == {"db"}
+    both = interpret("서비스 응답 지연이 DB 때문이야?", NOW, D30)
+    assert both.domains == {"service", "db"}  # 서비스 키워드가 있으면 함께
 
 
 def test_kubernetes_questions_do_not_pull_in_server() -> None:
