@@ -7,7 +7,12 @@ from infra_agent.tools.catalog_query import (
     rows_of,
     value_rows,
 )
-from infra_agent.tools.log_query import LogQueryTool, clean_text, trace_id_of
+from infra_agent.tools.log_query import (
+    LogQueryTool,
+    clean_text,
+    normalize_trace_id,
+    trace_id_of,
+)
 from infra_agent.tools.trace_search import TraceSearchTool, build_traceql
 
 __all__ = [
@@ -20,6 +25,7 @@ __all__ = [
     "TraceSearchTool",
     "build_traceql",
     "clean_text",
+    "normalize_trace_id",
     "rows_of",
     "trace_id_of",
     "value_rows",

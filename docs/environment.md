@@ -128,7 +128,7 @@
 - **호출·소비만 하는 서비스:** fraud-detection처럼 SERVER span 없이 CLIENT·CONSUMER span만 있는 서비스가 있습니다. Service Agent는 요청량·오류율 판정은 SERVER span 기준으로 하되, 로그·트레이스 상세 확인 대상은 span 종류와 관계없이 spanmetrics에 나타난 서비스로 봅니다.
 - **클러스터 객체 로그:** 앱 서비스가 아닌 로그 출처 하나가 `service_name` 라벨로 들어오며, 내용은 Kubernetes 이벤트가 아니라 Pod 객체 JSON 전체입니다(k8s 객체 수집으로 보임). Service Agent는 이를 서비스 상세 확인에서 제외합니다. Pod 상태(종료 사유 등)를 담고 있어 Kubernetes Agent의 종료 사유 확인 경로로 검토할 수 있습니다.
 - **Tempo service graph 지연 히스토그램:** 최대 유한 버킷이 12.8초로, p95가 12.8초이면 실제 값은 그 이상입니다. flagd EventStream처럼 수 분간 열려 있는 스트리밍 호출이 여기에 해당합니다.
-- **Service Agent의 Tempo 사용(#23):** `/api/search` TraceQL `{ resource.service.name = "<서비스>" && status = error }`(서비스 이름 형식 검사 후 리터럴로만 삽입).
+- **Service Agent의 Tempo 사용(#23):** `/api/search` TraceQL `{ resource.service.name = "<서비스>" && status = error }`(서비스 이름 형식 검사 후 리터럴로만 삽입). 검색 응답의 `traceID`는 앞자리 0을 뺀 16진수로 옵니다(live에서 31자리 값 확인). 로그의 trace_id(32자리)와 연결하려고 양쪽 모두 앞을 0으로 채운 32자리로 맞춥니다.
 - **Tempo 태그:** resource 42개(`service.name`, `k8s.*` 등), span 149개(`db.system`, `db.statement`, `db.query.text`, `http.*`, `rpc.*` 등), event 16개(`exception.*` 등).
   `db.statement`·`db.query.text`에는 **SQL 원문**이 담기므로 모델 입력 데이터 정책(architecture.md 10.2절) 결정 시 함께 고려합니다.
 

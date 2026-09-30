@@ -65,7 +65,10 @@ async def test_tempo_error_search_runs(settings: Settings) -> None:
         )
         outcome = await tool.search("errors", window, service=None, errors=True, limit=5)
     assert outcome.result.status in (ToolStatus.OK, ToolStatus.EMPTY), outcome.result.error
-    print(f"\n오류 트레이스 {len(outcome.result.data or [])}건")
+    rows = outcome.result.data or []
+    # Tempo의 앞자리 0 생략 형식을 로그와 같은 32자리로 맞췄는지 확인
+    assert all(len(str(r["trace_id"])) == 32 for r in rows)
+    print(f"\n오류 트레이스 {len(rows)}건")
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,7 @@ import pytest
 from infra_agent.config.settings import HttpDatasourceConfig
 from infra_agent.datasources import LokiClient, ResponseFormatError, TempoClient
 from infra_agent.datasources.loki import MAX_LOG_LIMIT
-from infra_agent.tools import clean_text, trace_id_of
+from infra_agent.tools import clean_text, normalize_trace_id, trace_id_of
 
 NOW = datetime(2026, 9, 29, 3, 0, tzinfo=UTC)
 CFG = HttpDatasourceConfig(enabled=True, url="http://synthetic.test")
@@ -104,3 +104,15 @@ def test_clean_text_and_trace_id() -> None:
     assert trace_id_of({}, f'msg traceId="{TID}"') == TID
     assert trace_id_of({"trace_id": "0" * 32}, "") is None  # 빈(0) trace_id는 무시
     assert trace_id_of({}, "no id here") is None
+    # 64비트(16자리) trace_id는 Tempo와 같은 128비트 표현(앞을 0으로 채움)으로 맞춤
+    assert trace_id_of({"trace_id": "a3ce929d0e0e4736"}, "") == "0" * 16 + "a3ce929d0e0e4736"
+
+
+def test_normalize_trace_id() -> None:
+    # Tempo 검색 응답은 앞자리 0을 뺀 값(31자리 등)을 돌려줌 → 로그의 32자리와 같게 맞춤
+    padded = "0d37e1fad09d9d91be74cef3c6187859"
+    assert normalize_trace_id(padded[1:]) == padded
+    assert normalize_trace_id(f" {padded.upper()} ") == padded
+    assert normalize_trace_id("0" * 32) is None
+    assert normalize_trace_id("not-hex") is None
+    assert normalize_trace_id("a" * 33) is None

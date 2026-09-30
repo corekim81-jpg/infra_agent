@@ -48,6 +48,20 @@ _TRACE_IN_LINE_RE = re.compile(
     r"(?i)trace[_.-]?id[\"'\s]*[:=][\"'\s]*([0-9a-f]{32}|[0-9a-f]{16})\b"
 )
 _TRACE_ID_RE = re.compile(r"^(?:[0-9a-f]{32}|[0-9a-f]{16})$")
+_HEX_ID_RE = re.compile(r"^[0-9a-f]{1,32}$")
+
+
+def normalize_trace_id(value: str) -> str | None:
+    """trace_id를 비교·표시용 표준 형태(소문자 16진수 32자리)로 맞춥니다.
+
+    Tempo 검색 응답은 앞자리 0을 뺀 16진수(예: 31자리)를 돌려주고, 로그에는 32자리(또는 64비트
+    trace의 16자리)로 남아 문자열 그대로는 같은 트레이스를 연결하지 못합니다. 앞을 0으로 채워
+    128비트 표현으로 통일합니다. 16진수가 아니거나 전부 0이면 None입니다.
+    """
+    text = value.strip().lower()
+    if not _HEX_ID_RE.match(text) or set(text) == {"0"}:
+        return None
+    return text.zfill(32)
 
 
 def clean_text(text: str, limit: int = MAX_LINE_CHARS) -> str:
@@ -61,15 +75,18 @@ def clean_text(text: str, limit: int = MAX_LINE_CHARS) -> str:
 
 
 def trace_id_of(labels: Mapping[str, str], line: str) -> str | None:
-    """구조화 메타데이터·라벨에서 먼저, 없으면 본문에서 trace_id(16진수 16·32자리)를 찾습니다."""
+    """구조화 메타데이터·라벨에서 먼저, 없으면 본문에서 trace_id(16진수 16·32자리)를 찾습니다.
+
+    찾은 값은 `normalize_trace_id`로 32자리 표준 형태로 돌려줍니다.
+    """
     for key in TRACE_ID_LABELS:
         value = labels.get(key, "").strip().lower()
-        if _TRACE_ID_RE.match(value) and set(value) != {"0"}:
-            return value
+        if _TRACE_ID_RE.match(value):
+            normalized = normalize_trace_id(value)
+            if normalized:
+                return normalized
     match = _TRACE_IN_LINE_RE.search(line)
-    if match and set(match.group(1)) != {"0"}:
-        return match.group(1).lower()
-    return None
+    return normalize_trace_id(match.group(1)) if match else None
 
 
 def _seconds(value: float) -> str:

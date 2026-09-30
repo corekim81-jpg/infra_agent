@@ -46,7 +46,7 @@ TASK = AgentTask(task_id="service-1", agent=AgentName.SERVICE, objective="test")
 SERVER = "SPAN_KIND_SERVER"
 PEAK = NOW - timedelta(minutes=10)
 FOCUS = TimeRange(start=PEAK - timedelta(minutes=5), end=PEAK + timedelta(minutes=5))
-TRACE_A = "4bf92f3577b34da6a3ce929d0e0e4736"
+TRACE_A = "0bf92f3577b34da6a3ce929d0e0e4736"  # 앞자리 0: Tempo는 이를 뺀 31자리로 돌려줌
 TRACE_B = "00f067aa0ba902b7a3ce929d0e0e4700"
 
 
@@ -154,7 +154,7 @@ def _details(ctx: AnalysisContext, fake: FakeBackend, *, lines_total: float = 10
     ]
     fake.tempo[build_traceql("cart", errors=True)] = [
         {
-            "traceID": TRACE_A,
+            "traceID": TRACE_A.lstrip("0"),  # Tempo 검색 응답 형식 (앞자리 0 생략)
             "rootServiceName": "frontend",
             "rootTraceName": "GET /api/cart",
             "startTimeUnixNano": str(int(PEAK.timestamp() * 1e9)),
@@ -217,6 +217,7 @@ async def test_red_thresholds_and_error_detail() -> None:
     assert any(
         t.startswith("오류 키워드 로그 (cart, ") and t.endswith("12건 / 전체 1000건") for t in texts
     )
+    # Tempo의 31자리 trace_id를 32자리로 맞춰 표시하고, 로그의 trace_id와 연결
     assert any(t.startswith("오류 트레이스 (cart, ") and TRACE_A in t for t in texts)
     linked = next(
         t for t in texts if t.startswith("오류 로그와 오류 트레이스가 같은 trace_id로 연결됨")
