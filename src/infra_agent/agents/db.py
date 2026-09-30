@@ -430,8 +430,8 @@ class DbAgent:
         values = sorted({fmt_value(v, "seconds") for _, v in rows})
         col.limit(
             f"{check.key}: 히스토그램 첫 구간이 0~{fmt_value(first, 'seconds')}로 넓어 p95를 "
-            f"기준({fmt_value(warn, 'seconds')})과 비교할 수 없음 ({names}{more}; 계산값 "
-            f"{', '.join(values)}은 첫 구간 안을 직선으로 보간한 값이며 실제 값은 "
+            f"기준({fmt_value(warn, 'seconds')})과 비교할 수 없음 ({names}{more}; 계산값"
+            f"({', '.join(values)})은 첫 구간 안을 직선으로 보간한 값이며 실제 값은 "
             f"{fmt_value(first, 'seconds')} 이하라는 것만 확인됨)"
         )
         col.suggest(
