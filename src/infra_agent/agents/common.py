@@ -111,11 +111,31 @@ def finish(task: AgentTask, agent: AgentName, col: Collector) -> AgentResult:
     )
 
 
+CAUSE_WORDS = ("원인", "이유", "왜", "cause", "why")
+"""질문이 원인을 묻는지 판단하는 단어 (원인 후보를 제시하지 않은 이유를 알릴지 결정)."""
+NO_ANOMALY_NO_HYPOTHESIS = "기준을 넘는 이상 징후가 없어 원인 후보(모델 해석)를 요청하지 않음"
+
+
+def asks_cause(question: str) -> bool:
+    text = question.lower()
+    return any(word in text for word in CAUSE_WORDS)
+
+
 async def with_explanation(
     result: AgentResult, explainer: AgentExplainer | None, ctx: AnalysisContext
 ) -> AgentResult:
-    """모델 해석(원인 후보·추가 확인)을 덧붙입니다. 코드 판정(사실)은 바꾸지 않습니다."""
-    if explainer is None or not explainer.needed(result):
+    """모델 해석(원인 후보·추가 확인)을 덧붙입니다. 코드 판정(사실)은 바꾸지 않습니다.
+
+    모델 해석은 이상 징후(경고·심각)가 있을 때만 요청합니다. 질문이 원인을 물었는데 이상 징후가
+    없으면, 원인 후보가 빠진 이유를 한계에 적습니다(추측성 원인을 만들지 않음).
+    """
+    if explainer is None:
+        return result
+    if not explainer.needed(result):
+        if asks_cause(ctx.question):
+            return result.model_copy(
+                update={"limitations": (*result.limitations, NO_ANOMALY_NO_HYPOTHESIS)}
+            )
         return result
     extra = await explainer.explain(result, ctx)
     return result.model_copy(

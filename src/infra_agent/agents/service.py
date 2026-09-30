@@ -914,38 +914,49 @@ class ServiceAgent:
         """질문이 로그·트레이스를 물을 때의 분석 구간 개요와, 남은 상세 자리 채우기.
 
         1. 분석 구간의 서비스별 오류 키워드 로그 수와 오류 트레이스(루트 서비스별) 개요
-        2. 상세 자리(`detail_services`)가 남으면, 오류 로그가 많은 서비스(다음으로 SERVER 외 span
-           오류가 있는 서비스)의 로그 샘플·오류 트레이스·trace_id 연결을 분석 구간 전체로 확인.
+        2. 상세 자리(`detail_services`)가 남으면 다음 순서로 고른 서비스의 로그 샘플·오류 트레이스·
+           trace_id 연결을 분석 구간 전체로 확인: 오류 로그가 많은 서비스 → SERVER 외 span 오류가
+           있는 서비스(현재 5분) → 분석 구간 오류 트레이스의 루트 서비스.
+           현재 오류율은 짧은 구간이라, 구간 중에만 오류가 있던 서비스는 오류 트레이스로 보완합니다.
            트레이스 지표가 없는 로그 출처(수집기·클러스터 객체 로그 등)는 서비스가 아니므로 제외
         """
         window = ctx.time_range
         span = f"{_hm(window.start)}~{_hm(window.end)}"
         log_counts = await self._overview_logs(window, targets, col, span)
-        await self._overview_traces(window, col, span)
+        trace_roots = await self._overview_traces(window, col, span)
         slots = self._cfg.detail_services - len(skip)
         if slots <= 0:
             return
-        by_logs = [name for name, n in log_counts if n > 0]
-        others = sorted(state.other_errors.items(), key=lambda x: -x[1])
-        candidates = list(dict.fromkeys(by_logs + [s for s, _ in others]))
-        non_service = [s for s in candidates if s not in state.traced]
+        basis_of: dict[str, str] = {}  # 서비스 → 선택 기준 (앞선 기준 우선)
+        for name, n in log_counts:
+            if n > 0:
+                basis_of.setdefault(name, "오류 로그가 많은 서비스")
+        for name, _ in sorted(state.other_errors.items(), key=lambda x: -x[1]):
+            basis_of.setdefault(name, "SERVER 외 span 오류가 있는 서비스")
+        for name in trace_roots:
+            basis_of.setdefault(name, "오류 트레이스의 루트 서비스")
+        # 트레이스에 나타난 이름은 서비스로 인정(현재 5분 지표에 없어도, 예: 가끔만 span을 남기는
+        # 서비스). 로그에서만 나온 이름은 트레이스 지표가 있어야 서비스로 봄
+        services = state.traced | set(trace_roots)
+        non_service = [s for s in basis_of if s not in services]
         if non_service:
             col.limit(
                 "트레이스 지표가 없는 로그 출처는 서비스 상세 확인에서 제외함: "
                 + ", ".join(non_service[: self._cfg.top_n])
             )
-        picked = [s for s in candidates if s in state.traced and s not in skip][:slots]
-        if picked and not skip:
-            basis = []
-            if any(s in by_logs for s in picked):
-                basis.append("오류 로그가 많은 서비스")
-            if any(s not in by_logs for s in picked):
-                basis.append("SERVER 외 span 오류가 있는 서비스")
-            col.limit(
-                "기준을 넘거나 증가한 오류 서비스가 없어, "
-                f"{'·'.join(basis)} 기준으로 {span} 구간의 로그·트레이스를 확인함: "
-                + ", ".join(picked)
-            )
+        picked = [s for s in basis_of if s in services and s not in skip][:slots]
+        if not skip:
+            if picked:
+                basis = "·".join(dict.fromkeys(basis_of[s] for s in picked))
+                col.limit(
+                    f"기준을 넘거나 증가한 오류 서비스가 없어, {basis} 기준으로 "
+                    f"{span} 구간의 로그·트레이스를 확인함: " + ", ".join(picked)
+                )
+            else:
+                col.limit(
+                    "오류 로그·SERVER 외 span 오류·오류 트레이스 기준으로 상세 확인할 서비스를 "
+                    "찾지 못해 서비스별 로그·트레이스 연결을 하지 않음"
+                )
         for service in picked:
             if not self._time_for_detail(col, f"{service} 로그·트레이스 확인"):
                 break
@@ -1000,10 +1011,11 @@ class ServiceAgent:
         )
         return counts
 
-    async def _overview_traces(self, window: TimeRange, col: Collector, span: str) -> None:
+    async def _overview_traces(self, window: TimeRange, col: Collector, span: str) -> list[str]:
+        """분석 구간 오류 트레이스의 루트 서비스별 개요. 루트 서비스를 많은 순으로 돌려줍니다."""
         if self._traces is None:
             col.limit("Tempo가 설정되지 않아 트레이스를 확인하지 않음")
-            return
+            return []
         result = self._record(
             await self._traces.search(
                 "trace.errors@window",
@@ -1016,17 +1028,14 @@ class ServiceAgent:
             col,
         )
         if result is None:
-            return
+            return []
         rows = rows_of(result)
         by_root: dict[str, int] = {}
         for r in rows:
             name = str(r.get("root_service") or "?")
             by_root[name] = by_root.get(name, 0) + 1
-        text = (
-            ", ".join(f"{n} {c}건" for n, c in sorted(by_root.items(), key=lambda x: -x[1]))
-            if rows
-            else "검색 결과 없음"
-        )
+        ranked = sorted(by_root.items(), key=lambda x: -x[1])
+        text = ", ".join(f"{n} {c}건" for n, c in ranked) if rows else "검색 결과 없음"
         col.findings.append(
             Finding(
                 kind=FindingKind.FACT,
@@ -1037,3 +1046,4 @@ class ServiceAgent:
                 basis=JudgementBasis.STATE,
             )
         )
+        return [name for name, _ in ranked if name != "?"]

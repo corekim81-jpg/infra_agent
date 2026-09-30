@@ -380,17 +380,51 @@ async def test_overview_when_question_asks_for_logs() -> None:
         x == f"트레이스 지표가 없는 로그 출처는 서비스 상세 확인에서 제외함: {events}"
         for x in result.limitations
     )
+    # 선택 순서: 오류 로그 → SERVER 외 span 오류(현재) → 구간 오류 트레이스의 루트 서비스
+    picked_note = next(x for x in result.limitations if x.startswith("기준을 넘거나"))
     assert (
         "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스·SERVER 외 span 오류가 "
-        "있는 서비스 기준으로"
-    ) in next(x for x in result.limitations if x.startswith("기준을 넘거나"))
-    assert next(x for x in result.limitations if x.startswith("기준을 넘거나")).endswith(
-        ": cart, worker"
-    )
+        "있는 서비스·오류 트레이스의 루트 서비스 기준으로"
+    ) in picked_note
+    assert picked_note.endswith(": cart, worker, frontend")
     assert not any(q == build_traceql(events, errors=True) for _, q in fake.calls)
     assert any(q == build_traceql("worker", errors=True) for _, q in fake.calls)
+    assert any(q == build_traceql("frontend", errors=True) for _, q in fake.calls)
     ids = [e.evidence_id for e in result.evidence]
     assert len(ids) == len(set(ids))
+
+
+async def test_overview_falls_back_to_error_trace_roots() -> None:
+    """현재 5분 오류율에는 없지만 분석 구간에 오류 트레이스가 있으면 그 루트 서비스를 확인."""
+    ctx = _ctx(question="오류가 증가한 시간대의 로그와 트레이스를 연결해서 원인 후보를 알려줘")
+    fake = FakeBackend()
+    _red(ctx, fake, cart_error=0.0)
+    fake.add(_expr("service.error_ratio", ctx), [])  # 현재(5분) 오류 span 없음
+    fake.add(_expr("service.dependency_failed_rate", ctx), [])
+    window = ctx.time_range
+    everyone = 'service_name=~".+"'
+    fake.loki_metrics[_loki("log.lines_total", window, everyone)] = [({"service_name": "cart"}, 9)]
+    fake.loki_metrics[_loki("log.error_lines", window, everyone)] = []  # 오류 로그 없음
+    fake.tempo[build_traceql(None, errors=True)] = [
+        {"traceID": TRACE_A, "rootServiceName": "cart"},
+        {"traceID": TRACE_B, "rootServiceName": "cart"},
+        # 현재 5분 지표에는 없는 서비스도 트레이스에 나타났으면 서비스로 인정
+        {"traceID": "22" * 16, "rootServiceName": "load-generator"},
+    ]
+    fake.tempo[build_traceql("cart", errors=True)] = [{"traceID": TRACE_A}]
+    result = await _run(ctx, fake)
+    note = next(x for x in result.limitations if x.startswith("기준을 넘거나"))
+    assert "오류 트레이스의 루트 서비스 기준으로" in note
+    assert note.endswith(": cart, load-generator")
+    assert any(
+        t.startswith("오류 트레이스 (cart, ") for t in (f.statement for f in result.findings)
+    )
+    assert any(q == build_traceql("load-generator", errors=True) for _, q in fake.calls)
+    assert not any("로그 출처는 서비스 상세 확인에서 제외" in x for x in result.limitations)
+    # 후보가 전혀 없으면 연결하지 않은 이유를 한계에 적음
+    fake.tempo[build_traceql(None, errors=True)] = []
+    empty = await _run(ctx, fake)
+    assert any("상세 확인할 서비스를 찾지 못해" in x for x in empty.limitations)
 
 
 def test_traceql_rejects_injection() -> None:
