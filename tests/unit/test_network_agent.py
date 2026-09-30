@@ -262,3 +262,64 @@ async def test_network_question_runs_only_network_agent() -> None:
     assert [r.agent for r in bundle.results] == [AgentName.NETWORK]
     assert bundle.answer.unverified_areas == ()
     assert "(에이전트 실행: network 성공 " in render_text(bundle)
+
+
+async def test_namespace_filter_is_destination_based() -> None:
+    from infra_agent.agents.network import HUBBLE_FILTER_NOTE
+    from infra_agent.schemas import TargetRef
+
+    ctx = _ctx().model_copy(
+        update={"targets": (TargetRef(kind=TargetKind.NAMESPACE, name="otel-demo"),)}
+    )
+    tool = CatalogQueryTool(
+        CATALOG,
+        None,  # type: ignore[arg-type]
+        agent=AgentName.NETWORK,
+        budget=ToolBudget(1),
+        timeout_seconds=1,
+    )
+
+    def filtered(key: str) -> str:
+        item = tool.item(key)
+        selector, _ = item.selector_for({TargetKind.NAMESPACE: "otel-demo"})
+        mode = QueryMode.WINDOW if key in WINDOW_ITEMS else QueryMode.CURRENT
+        return tool.build_expr(item, selector, mode, ctx)
+
+    fake = ExprProm()
+    fake.add(
+        _expr("network.hubble_lost_events_increase", ctx),  # 대상 필터 없이 전체를 봄
+        [({"k8s_node_name": "k3d-a-0", "source": ""}, 0.3), ({"k8s_node_name": "b"}, 0.4)],
+    )
+    fake.add(filtered("network.drops_increase"), [({**FLOW, "reason": "X"}, 0.0)])
+    fake.add(
+        filtered("network.flows_by_verdict"),
+        [
+            ({**FLOW, "verdict": "FORWARDED"}, 10.0),
+            (
+                {
+                    "source_namespace": "a",
+                    "destination_namespace": "otel-demo",
+                    "verdict": "DROPPED",
+                },
+                0.001,
+            ),
+        ],
+    )
+    fake.add(filtered("network.tcp_flags_rate"), [(FLOW, 1.0)])  # flag 라벨 없음
+    result = await _run(ctx, fake)
+    texts = [f.statement for f in result.findings]
+    assert HUBBLE_FILTER_NOTE in result.limitations
+    assert "Hubble 패킷 드롭 (최근 30분) (도착 기준): 발생 없음 (대상 1개)" in texts
+    # 행별로는 작아도 합계가 0.5 이상이면 유실로 보고, 위치가 비어 있으면 "?"로 표시
+    assert "Hubble 이벤트 유실 (최근 30분): 약 0.7회 (유실 위치: ?)" in texts
+    assert any(
+        t.startswith("흐름 드롭·오류 판정 비율(현재, 5분) (도착 기준): 네임스페이스 쌍 1개")
+        for t in texts
+    )
+    assert any(
+        "비율을 판정하지 않음 (그중 드롭·오류 판정이 있는 쌍 1개)" in x for x in result.limitations
+    )
+    assert "network.tcp_flags_rate: 결과에 TCP 플래그 값이 없어 RST 여부를 판단하지 않음" in (
+        result.limitations
+    )
+    assert not any(t.startswith("TCP RST") for t in texts)

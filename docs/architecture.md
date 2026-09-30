@@ -108,7 +108,10 @@ flowchart TD
 - Hubble 이벤트 유실이 있으면 정보로 표시하고 Hubble 기반 결과가 불완전할 수 있음을 한계에 적음
 - Hubble 지표의 `k8s_*` 라벨은 수집 주체(cilium)이므로 대상은 `source_*`·`destination_*`로 표시. 빈 값은 "외부·미확인"
 - 드롭 사유에는 정책 거부처럼 의도된 차단도 있어 드롭이 곧 장애라고 단정하지 않음(한계·지침에 명시). 판정 기준은 live 결과로 조정 예정
+- 네임스페이스·워크로드 필터는 Hubble 항목에서 도착 기준이므로, 필터가 있으면 한계에 적고 판정 문장에 "(도착 기준)"을 붙임. Hubble 이벤트 유실은 관측 품질 점검이라 대상 필터 없이 전체를 봄
+- 흐름이 적어 비율을 판정하지 않은 네임스페이스 쌍은 개수(드롭·오류 판정이 있는 쌍 수 포함)를 한계에 적음. 결과에 TCP 플래그 값이 없으면 RST 여부를 판단하지 않음
 - 선행 Service 결과는 아직 쓰지 않음(교차 분석은 12단계)
+- Network·DB는 선행 결과 없이도 분석할 수 있으므로(`plan.OPTIONAL_UPSTREAM`), Service가 실패해도 건너뛰지 않고 실행
 - 질문 해석에 등록되지 않은 에이전트가 있으면 실행 계획의 `unavailable`을 "확인하지 못한 영역"에 반영(`runner`)
 
 **DB Agent 구현 (#25):** `agents/db.py`, 지침 `DB_SYSTEM_PROMPT`, 도구 `tools/catalog_query.py`(카탈로그 `db.*`·`cache.*`)
@@ -282,7 +285,7 @@ DataSource (인터페이스)
 ## 8. 실행 제어
 
 > **현재 구현 (#11, #19):** `orchestration/plan.py`(실행 계획), `orchestration/executor.py`(실행기), `agents/base.py`(에이전트 공통 인터페이스).
-> - 계획: 질문 분야 → 에이전트 작업 템플릿. 구현된 에이전트(`runner.AGENT_BUILDERS`)만 넣고 나머지는 "확인하지 못한 영역". 의존 규칙은 Network·DB → Service 선행(두 에이전트가 모두 계획에 있을 때만). 작업 ID 중복·없는 선행 작업·순환을 검증합니다.
+> - 계획: 질문 분야 → 에이전트 작업 템플릿. 구현된 에이전트(`runner.AGENT_BUILDERS`)만 넣고 나머지는 "확인하지 못한 영역". 의존 규칙은 Network·DB → Service 선행(두 에이전트가 모두 계획에 있을 때만). Network·DB는 선택적 선행이라 Service가 실패해도 실행합니다(#27). 작업 ID 중복·없는 선행 작업·순환을 검증합니다.
 > - 실행: 선행 작업이 끝난 작업부터 시작하고, 동시에 실행되는 에이전트 수를 `execution.max_concurrency`로 제한합니다. 선행 결과는 `upstream`으로 전달합니다.
 > - 제한 시간: 에이전트별 `agent_timeout_seconds`와 요청 마감 시각(`request_timeout_seconds`) 중 먼저 오는 것, 도구 호출별 `tool_timeout_seconds`.
 > - 에이전트 안의 모델 해석은 그 에이전트의 남은 시간(`agents.base.remaining_seconds()`) 안에서만 실행합니다. 남은 시간이 부족하면 생략하고, 시간 안에 응답이 없으면 해석만 버리고 코드 판정 결과는 유지합니다(에이전트 제한 시간 초과로 결과 전체가 버려지는 것을 방지).

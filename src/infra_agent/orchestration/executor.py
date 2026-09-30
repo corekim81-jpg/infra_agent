@@ -5,6 +5,8 @@
 - 제한 시간: 에이전트별 제한 시간과 요청 마감 시각 중 먼저 오는 것을 적용합니다.
 - 부분 실패: 에이전트 예외·타임아웃은 `failed`, 선행 작업이 실패했거나 마감이 지난 작업은
   `skipped`로 기록하고 나머지 결과는 그대로 종합에 넘깁니다. 오류 메시지는 마스킹합니다.
+  단, 선행 결과 없이도 분석할 수 있는 에이전트(`plan.optional_upstream`)는 선행 작업이 실패해도
+  실행합니다.
 - 재시도: 데이터 소스 일시 오류는 각 클라이언트가 재시도합니다. 에이전트 단위 재시도는 하지 않습니다
   (같은 조회·모델 호출을 반복해 예산을 두 번 쓰고, 타임아웃의 대부분은 재시도로 해결되지 않기 때문).
 - 조회 예산·모델 호출 예산은 에이전트 생성 시 요청 단위 객체를 공유해 적용합니다.
@@ -96,7 +98,11 @@ class Executor:
             try:
                 upstream = {dep: await done[dep] for dep in task.depends_on}
                 started = time.monotonic()  # 선행 작업 대기 시간은 제외
-                blocked = [d for d, r in upstream.items() if r.status in _BLOCKING]
+                blocked = (
+                    []
+                    if task.agent in plan.optional_upstream
+                    else [d for d, r in upstream.items() if r.status in _BLOCKING]
+                )
                 agent = agents.get(task.agent)
                 if blocked:
                     result = _not_run(

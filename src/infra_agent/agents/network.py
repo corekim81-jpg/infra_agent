@@ -60,6 +60,18 @@ DROP_REASON_NOTE = (
     "Hubble 드롭 사유 중에는 정책 거부처럼 의도된 차단도 있어, 드롭이 곧 장애를 뜻하지는 않습니다"
     "(사유와 출발·도착을 함께 확인)."
 )
+HUBBLE_FILTER_NOTE = (
+    "Hubble 항목(드롭·흐름 판정·TCP RST·DNS)의 네임스페이스·워크로드 필터는 도착(destination) "
+    "기준이라, 요청 대상에서 나가는 트래픽은 포함되지 않음"
+)
+HUBBLE_KEYS = frozenset(
+    {
+        "network.drops_increase",
+        "network.flows_by_verdict",
+        "network.tcp_flags_rate",
+        "network.dns_query_rate",
+    }
+)
 UNKNOWN_PEER = "외부·미확인"
 BAD_VERDICTS = frozenset({"DROPPED", "ERROR"})
 """문제로 보는 흐름 판정 값 (Hubble verdict)."""
@@ -136,6 +148,7 @@ class NetworkAgent:
         self._tool = tool
         self._cfg = analysis
         self._explainer = explainer
+        self._scope_suffix = ""
 
     async def run(
         self,
@@ -147,6 +160,11 @@ class NetworkAgent:
         targets = context_targets(ctx)
         col = Collector()
         col.limit(SCOPE_NOTE)
+        # Hubble 항목의 네임스페이스·워크로드 필터는 도착(destination) 기준입니다.
+        hubble_filtered = bool({TargetKind.NAMESPACE, TargetKind.WORKLOAD} & set(targets))
+        self._scope_suffix = " (도착 기준)" if hubble_filtered else ""
+        if hubble_filtered:
+            col.limit(HUBBLE_FILTER_NOTE)
         await self._lost_events(ctx, targets, col)
         for check in COUNT_CHECKS:
             await self._count(check, ctx, targets, col)
@@ -190,6 +208,10 @@ class NetworkAgent:
                 return
         col.limit(f"{key}: 결과가 없어 판단하지 않음")
 
+    def _suffix_for(self, key: str) -> str:
+        """Hubble 항목에만 대상 필터 기준 표시를 붙입니다."""
+        return self._scope_suffix if key in HUBBLE_KEYS else ""
+
     def _fact(
         self,
         statement: str,
@@ -214,14 +236,15 @@ class NetworkAgent:
     ) -> None:
         """Hubble 이벤트 유실: 분석 대상 이상이 아니라 관측 품질 문제이므로 정보와 한계로 표시."""
         key = "network.hubble_lost_events_increase"
-        fetched = await self._fetch(key, ctx, QueryMode.WINDOW, targets, col)
+        # 관측 품질 점검이므로 요청 대상과 관계없이 전체를 봅니다(대상 필터를 적용할 수 없는 항목).
+        fetched = await self._fetch(key, ctx, QueryMode.WINDOW, {}, col)
         if fetched is None:
             return
         result, rows = fetched
         scope = window_text(ctx)
         lost = sum(v for _, v in rows)
         if lost >= 0.5:
-            sources = sorted({labels.get("source", "?") for labels, v in rows if v >= 0.5})
+            sources = sorted({labels.get("source") or "?" for labels, v in rows if v > 0})
             col.findings.append(
                 self._fact(
                     f"Hubble 이벤트 유실 ({scope}): {count_text(lost)} (유실 위치: "
@@ -273,7 +296,11 @@ class NetworkAgent:
             col.limit(f"{check.key}: 데이터 최신성을 확인하지 못해 발생 여부를 판단하지 않음")
             return
         col.findings.append(
-            self._fact(f"{check.label} ({scope}): 발생 없음 (대상 {len(rows)}개)", result)
+            self._fact(
+                f"{check.label} ({scope}){self._suffix_for(check.key)}: 발생 없음 "
+                f"(대상 {len(rows)}개)",
+                result,
+            )
         )
 
     async def _verdicts(
@@ -301,6 +328,14 @@ class NetworkAgent:
             if verdict in BAD_VERDICTS:
                 bad[pair] = bad.get(pair, 0.0) + value
         active = {p: t for p, t in totals.items() if t >= self._cfg.min_request_rate}
+        quiet = [p for p in totals if p not in active]
+        if quiet:
+            with_bad = sum(1 for p in quiet if bad.get(p, 0.0) > 0)
+            col.limit(
+                f"{key}: 흐름이 {self._cfg.min_request_rate:g}건/초보다 적은 네임스페이스 쌍 "
+                f"{len(quiet)}개는 비율을 판정하지 않음"
+                + (f" (그중 드롭·오류 판정이 있는 쌍 {with_bad}개)" if with_bad else "")
+            )
         if not active:
             col.limit(
                 f"{key}: 흐름이 기준({self._cfg.min_request_rate:g}건/초)보다 적어 판단하지 않음"
@@ -332,7 +367,8 @@ class NetworkAgent:
         )
         col.findings.append(
             self._fact(
-                f"흐름 드롭·오류 판정 비율(현재, 5분): 네임스페이스 쌍 {len(ratios)}개 모두 기준"
+                f"흐름 드롭·오류 판정 비율(현재, 5분){self._scope_suffix}: "
+                f"네임스페이스 쌍 {len(ratios)}개 모두 기준"
                 f"({fmt_value(warn, 'ratio')}) 미만, {worst_text} "
                 f"(확인한 판정 값: {', '.join(sorted(v for v in verdicts if v))})",
                 result,
@@ -366,10 +402,14 @@ class NetworkAgent:
             col.findings.append(
                 self._fact("TCP RST 패킷(현재, 5분, 판정 기준 미적용): " + ", ".join(parts), result)
             )
+        elif not flags:
+            col.limit(f"{key}: 결과에 TCP 플래그 값이 없어 RST 여부를 판단하지 않음")
         elif is_fresh(result, self._cfg):
             col.findings.append(
                 self._fact(
-                    "TCP RST 패킷(현재, 5분): 없음 (확인한 플래그: " + ", ".join(flags) + ")",
+                    f"TCP RST 패킷(현재, 5분){self._scope_suffix}: 없음 (확인한 플래그: "
+                    + ", ".join(flags)
+                    + ")",
                     result,
                 )
             )
