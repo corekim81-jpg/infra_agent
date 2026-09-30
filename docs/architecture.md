@@ -1,6 +1,6 @@
 # 아키텍처 설계
 
-> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15), 실행 계획·실행기(4·8절, #19), Kubernetes Agent(3절, #21), Service Agent와 Loki·Tempo 조회(3·7절, #23), DB Agent(3절, #25)가 구현되었습니다. Network 에이전트는 아직 구현되지 않았습니다.
+> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15), 실행 계획·실행기(4·8절, #19), Kubernetes Agent(3절, #21), Service Agent와 Loki·Tempo 조회(3·7절, #23), DB Agent(3절, #25), Network Agent(3절, #27)가 구현되었습니다. 분야 간 교차 분석(12단계)은 아직 없습니다.
 > 구현이 진행되면 각 절에 구현 상태를 표시하고, 설계와 달라진 부분을 이 문서에 반영합니다.
 > 기능 범위의 기준은 [README.md](../README.md)입니다.
 
@@ -99,7 +99,17 @@ flowchart TD
 - 지연 p95가 히스토그램의 최대 유한 버킷 경계와 같으면(`CatalogQueryTool.max_bucket_bound`) "N초 이상(히스토그램 최대 구간)"으로 표시하고 한계에 적음. 스트리밍처럼 오래 열린 호출은 지연이 아니라 연결 유지 시간일 수 있음
 - 로그 본문은 외부 데이터: 도구 계층에서 제어문자 제거·공백 정리·마스킹·길이 제한(200자), 라벨은 서비스·Pod·레벨 관련만 남김. 답변에는 근거별 최대 3건을 "(로그 원문)"으로 표시하고, 모델에는 `data_policy: full`일 때만 근거별 최대 5건을 `<observed_data>` 안에 전달
 - 상세 단계는 에이전트 남은 시간이 조회 1회 제한 시간 + 7초보다 적으면 생략하고 한계에 표시(앞서 판정한 결과가 제한 시간 초과로 버려지지 않게 함)
-- 네트워크·DB 내부 지표는 조회하지 않으므로 "네트워크 문제/DB 문제"를 단정하지 않음. DB 내부 지표는 DB Agent(질문이 DB를 함께 물을 때 Service 다음에 실행), Network Agent는 미구현이며 "확인하지 못한 영역"으로 답함
+- 네트워크·DB 내부 지표는 조회하지 않으므로 "네트워크 문제/DB 문제"를 단정하지 않음. 질문이 함께 물으면 Service 다음에 Network·DB Agent가 병렬로 확인
+
+**Network Agent 구현 (#27):** `agents/network.py`, 지침 `NETWORK_SYSTEM_PROMPT`, 도구 `tools/catalog_query.py`(카탈로그 `network.*`)
+- 구간 내 발생 수(분석 구간 전체 `increase()`, 0.5 이상이면 발생): Hubble 패킷 드롭(사유·출발·도착 워크로드별), 노드 인터페이스 오류, Pod 네트워크 오류, 컨테이너 패킷 드롭. 0이면 최신 데이터일 때만 "발생 없음"
+- 흐름 판정 비율: 네임스페이스 쌍별 DROPPED·ERROR 판정 흐름 비율(`flow_drop_ratio_warning`, 흐름이 `min_request_rate`보다 적은 쌍 제외, 확인한 판정 값을 함께 표시)
+- 현재 값(판정 없음): TCP RST 패킷(RST가 없으면 확인한 플래그 값을 표시), DNS 질의량. DNS 응답 코드·네트워크 지연(RTT)은 수집되지 않아 판단하지 않음
+- Hubble 이벤트 유실이 있으면 정보로 표시하고 Hubble 기반 결과가 불완전할 수 있음을 한계에 적음
+- Hubble 지표의 `k8s_*` 라벨은 수집 주체(cilium)이므로 대상은 `source_*`·`destination_*`로 표시. 빈 값은 "외부·미확인"
+- 드롭 사유에는 정책 거부처럼 의도된 차단도 있어 드롭이 곧 장애라고 단정하지 않음(한계·지침에 명시). 판정 기준은 live 결과로 조정 예정
+- 선행 Service 결과는 아직 쓰지 않음(교차 분석은 12단계)
+- 질문 해석에 등록되지 않은 에이전트가 있으면 실행 계획의 `unavailable`을 "확인하지 못한 영역"에 반영(`runner`)
 
 **DB Agent 구현 (#25):** `agents/db.py`, 지침 `DB_SYSTEM_PROMPT`, 도구 `tools/catalog_query.py`(카탈로그 `db.*`·`cache.*`)
 - PostgreSQL 직접 접속 없이 수집 지표로 판정. 높을수록 문제: PostgreSQL 연결 사용률·앱 커넥션 풀 사용률(`utilization_warning/critical`), 롤백 비율(`rollback_ratio_warning`), DB 작업 지연 p95·DB 호출 span 지연 p95(`latency_p95_warning_seconds`, Service Agent의 DB 호출 판정과 같은 기준). 낮을수록 문제: 버퍼 캐시 적중률(`cache_hit_ratio_warning`)

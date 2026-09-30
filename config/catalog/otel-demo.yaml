@@ -303,14 +303,14 @@ items:
     caveats: [OOMKilled로 인한 재시작 여부는 컨테이너 종료 사유(이벤트·Kubernetes API)로 확인해야 함]
 
   # ------------------------------------------------------------------ Network
-  network.drop_rate:
+  network.drops_increase:
     agent: network
     source: prometheus
-    description: Hubble 패킷 드롭 증가율 (사유·출발·도착 워크로드별)
-    unit: packets/s
+    description: 구간 내 Hubble 패킷 드롭 수 (사유·출발·도착 워크로드별)
+    unit: count
     query: >-
       sum by (reason, source_namespace, source_workload, destination_namespace, destination_workload)
-      (rate(hubble_drop_total{{{selector}}}[{range}]))
+      (increase(hubble_drop_total{{{selector}}}[{range}]))
     requires_metrics: [hubble_drop_total]
     target_labels: &hubble_targets
       namespace: destination_namespace
@@ -320,6 +320,7 @@ items:
     caveats:
       - namespace 대상은 도착(destination) 기준으로 필터링함. 출발 기준이 필요하면 source_namespace로 별도 조회
       - k8s_namespace_name·k8s_pod_name 라벨은 Hubble(cilium) 수집 Pod를 가리키므로 대상 필터에 쓰지 않음
+      - increase()의 추정값임. 출발·도착 워크로드가 빈 값이면 클러스터 밖이나 식별되지 않은 대상임
   network.flows_by_verdict:
     agent: network
     source: prometheus
@@ -358,46 +359,46 @@ items:
     target_labels: *hubble_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats: [DNS 응답 코드(rcode) 라벨이 없어 DNS 오류율은 이 지표로 판단할 수 없음]
-  network.hubble_lost_events:
+  network.hubble_lost_events_increase:
     agent: network
     source: prometheus
-    description: Hubble 이벤트 유실 증가율 (관측 누락 가능성)
-    unit: events/s
-    query: 'sum by (k8s_node_name, source) (rate(hubble_lost_events_total{{{selector}}}[{range}]))'
+    description: 구간 내 Hubble 이벤트 유실 수 (관측 누락 가능성)
+    unit: count
+    query: 'sum by (k8s_node_name, source) (increase(hubble_lost_events_total{{{selector}}}[{range}]))'
     requires_metrics: [hubble_lost_events_total]
     target_labels: {node: k8s_node_name}
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats: [값이 0보다 크면 Hubble 기반 네트워크 분석 결과가 불완전할 수 있음을 답변에 표시]
-  network.node_interface_errors:
+  network.node_interface_errors_increase:
     agent: network
     source: prometheus
-    description: 노드 네트워크 인터페이스 오류 증가율
-    unit: errors/s
+    description: 구간 내 노드 네트워크 인터페이스 오류 수
+    unit: count
     query: >-
       sum by (k8s_node_name, interface, direction)
-      (rate(k8s_node_network_errors_total{{{selector}}}[{range}]))
+      (increase(k8s_node_network_errors_total{{{selector}}}[{range}]))
     requires_metrics: [k8s_node_network_errors_total]
     target_labels: *node_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-  network.pod_network_errors:
+  network.pod_network_errors_increase:
     agent: network
     source: prometheus
-    description: Pod 네트워크 오류 증가율 (kubeletstats)
-    unit: errors/s
+    description: 구간 내 Pod 네트워크 오류 수 (kubeletstats)
+    unit: count
     query: >-
       sum by (k8s_namespace_name, k8s_pod_name, direction)
-      (rate(k8s_pod_network_errors_total{{{selector}}}[{range}]))
+      (increase(k8s_pod_network_errors_total{{{selector}}}[{range}]))
     requires_metrics: [k8s_pod_network_errors_total]
     target_labels: *kubelet_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-  network.container_packet_drops:
+  network.container_packet_drops_increase:
     agent: network
     source: prometheus
-    description: 컨테이너 수신·송신 패킷 드롭 증가율 (cAdvisor)
-    unit: packets/s
+    description: 구간 내 컨테이너 수신·송신 패킷 드롭 수 (cAdvisor, Pod별)
+    unit: count
     query: >-
-      sum by (k8s_namespace_name, k8s_pod_name) (rate(container_network_receive_packets_dropped_total{{{selector}}}[{range}]))
-      + sum by (k8s_namespace_name, k8s_pod_name) (rate(container_network_transmit_packets_dropped_total{{{selector}}}[{range}]))
+      sum by (k8s_namespace_name, k8s_pod_name) (increase(container_network_receive_packets_dropped_total{{{selector}}}[{range}]))
+      + sum by (k8s_namespace_name, k8s_pod_name) (increase(container_network_transmit_packets_dropped_total{{{selector}}}[{range}]))
     requires_metrics:
       - container_network_receive_packets_dropped_total
       - container_network_transmit_packets_dropped_total

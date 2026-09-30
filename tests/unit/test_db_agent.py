@@ -344,7 +344,7 @@ async def test_db_question_runs_only_db_agent() -> None:
     assert "(에이전트 실행: db 성공 " in text
 
 
-async def test_slow_service_question_runs_service_then_db() -> None:
+async def test_slow_service_question_runs_service_then_network_and_db() -> None:
     bundle = await answer_question(
         "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘",
         _settings(),
@@ -352,11 +352,14 @@ async def test_slow_service_question_runs_service_then_db() -> None:
         now=NOW,
         transport=ExprProm().transport(),
     )
-    assert [r.agent for r in bundle.results] == [AgentName.SERVICE, AgentName.DB]
-    assert [run.depends_on for run in bundle.runs] == [(), ("service-1",)]
-    assert bundle.answer.unverified_areas == (
-        "네트워크: 해당 분야 에이전트가 아직 구현되지 않아 확인하지 않음",
-    )
+    # Service 다음에 Network·DB (서로 독립이라 병렬)
+    assert [r.agent for r in bundle.results] == [
+        AgentName.SERVICE,
+        AgentName.NETWORK,
+        AgentName.DB,
+    ]
+    assert [run.depends_on for run in bundle.runs] == [(), ("service-1",), ("service-1",)]
+    assert bundle.answer.unverified_areas == ()
 
 
 async def test_first_bucket_interpolation_is_not_judged() -> None:

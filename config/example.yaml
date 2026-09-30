@@ -71,3 +71,5 @@ analysis:                    # 판정 기준 (제안 기본값)
   # DB Agent (연결·커넥션 풀 사용률은 utilization_*, DB 지연은 latency_p95_warning_seconds를 함께 사용)
   rollback_ratio_warning: 0.05       # PostgreSQL 롤백 비율 경고
   cache_hit_ratio_warning: 0.9       # PostgreSQL 버퍼 캐시 적중률이 이보다 낮으면 경고
+  # Network Agent
+  flow_drop_ratio_warning: 0.05      # Hubble 흐름 중 드롭·오류 판정 비율 경고

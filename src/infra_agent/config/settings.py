@@ -188,6 +188,9 @@ class AnalysisConfig(_Strict):
     """PostgreSQL 롤백 비율(rollbacks / (commits + rollbacks)) 경고 기준."""
     cache_hit_ratio_warning: float = Field(default=0.9, gt=0, le=1)
     """PostgreSQL 버퍼 캐시 적중률이 이 값보다 낮으면 경고."""
+    # --- Network Agent (#27). 흐름이 min_request_rate보다 적은 네임스페이스 쌍은 판정하지 않음
+    flow_drop_ratio_warning: float = Field(default=0.05, gt=0, le=1)
+    """Hubble 흐름 중 DROPPED·ERROR 판정 비율 경고 기준."""
 
     @model_validator(mode="after")
     def _order(self) -> Self:

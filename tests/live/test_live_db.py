@@ -57,8 +57,10 @@ async def test_service_then_db(settings: Settings) -> None:
         load_catalog(settings.catalog.path),
         use_llm=False,
     )
-    assert [r.agent for r in bundle.results] == [AgentName.SERVICE, AgentName.DB]
-    service, db = bundle.results
+    # Network Agent(#27) 구현 후에는 Service 다음에 Network·DB가 함께 실행됨
+    by_agent = {r.agent: r for r in bundle.results}
+    assert bundle.results[0].agent is AgentName.SERVICE and AgentName.DB in by_agent
+    service, db = by_agent[AgentName.SERVICE], by_agent[AgentName.DB]
     # Service는 Loki·Tempo 일부 실패로 PARTIAL일 수 있음. DB는 Service가 끝난 뒤 실행되어야 함
     assert service.status in (AgentStatus.SUCCESS, AgentStatus.PARTIAL), service.errors
     assert db.status is AgentStatus.SUCCESS, [e.message for e in db.errors]

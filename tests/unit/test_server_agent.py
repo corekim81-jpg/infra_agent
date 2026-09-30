@@ -197,7 +197,7 @@ async def test_all_queries_failing_marks_failed() -> None:
     assert not result.findings and result.errors
 
 
-async def test_answer_question_end_to_end() -> None:
+async def test_answer_question_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = load_settings(
         environ={
             "INFRA_AGENT_PROFILE": "dev-tunnel",
@@ -224,6 +224,14 @@ async def test_answer_question_end_to_end() -> None:
     assert "(에이전트 실행: server 성공 " in text
     assert "구간 집계 항목" not in text  # 서버 상태 질문에는 구간 집계 항목이 없음
 
+    # 모든 분야가 구현되었으므로, 에이전트가 없는 분야 처리는 등록을 빼서 확인
+    import infra_agent.orchestration.runner as runner_mod
+
+    monkeypatch.setattr(
+        runner_mod,
+        "AGENT_BUILDERS",
+        {k: v for k, v in runner_mod.AGENT_BUILDERS.items() if k is not AgentName.NETWORK},
+    )
     other = await answer_question(
         "네트워크 패킷 드롭이나 DNS 문제 있어?",
         settings,
