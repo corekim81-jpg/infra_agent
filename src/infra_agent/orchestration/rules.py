@@ -111,11 +111,9 @@ DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
         "캐시",
         "cache",
         "커넥션 풀",
-        "pool",
+        "connection pool",
         "트랜잭션",
         "transaction",
-        "롤백",
-        "rollback",
         "sql",
     ),
     "service": (
@@ -203,9 +201,48 @@ Kubernetes 키워드가 있고 서버 분야가 이 단어로만 판별되면 �
 TARGET_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 
 GENERIC_SLOW_WORDS = ("느려", "느린", "slow", "지연", "latency")
-"""서비스 응답과 DB 쿼리 모두에 쓰이는 단어.
-DB 키워드가 있고 서비스 분야가 이 단어로만 판별되면 서비스 분석을 붙이지 않습니다
-(예: "커넥션 풀이 부족하거나 쿼리가 느려진 징후" → DB만)."""
+"""서비스 응답과 DB 쿼리 모두에 쓰이는 단어."""
+DB_INTERNAL_WORDS = (
+    "쿼리",
+    "query",
+    "커넥션",
+    "connection",
+    "sql",
+    "트랜잭션",
+    "transaction",
+    "데드락",
+    "deadlock",
+    "잠금",
+    "lock",
+)
+"""DB 내부를 가리키는 단어. 이 단어가 있고 서비스 분야가 `GENERIC_SLOW_WORDS`로만 판별되면
+느려진 대상이 DB 작업이므로 서비스 분석을 붙이지 않습니다
+(예: "커넥션 풀이 부족하거나 쿼리가 느려진 징후" → DB만,
+"checkout 느린 이유가 DB야?" → 서비스와 DB 모두)."""
+AMBIGUOUS_DB_WORDS = ("캐시", "cache")
+"""서버 메모리(페이지 캐시)와 DB 캐시(Valkey·버퍼 캐시)에 모두 쓰이는 단어.
+서버 자원 키워드가 있고 DB 분야가 이 단어로만 판별되면 DB 분석을 붙이지 않습니다
+(예: "노드 메모리 캐시 사용량" → 서버만)."""
+
+_ASCII_WORD = re.compile(r"^[a-z0-9 ]+$")
+
+
+def _keyword_pattern(word: str) -> re.Pattern[str]:
+    """영문 키워드는 앞에 다른 영문자·숫자가 붙지 않은 경우만 인정합니다
+    ("block"의 lock, "catalog"의 log, "already"의 ready를 키워드로 보지 않음).
+    한글 키워드는 조사가 붙으므로 부분 문자열로 찾습니다."""
+    if _ASCII_WORD.match(word):
+        return re.compile(r"(?<![a-z0-9])" + re.escape(word))
+    return re.compile(re.escape(word))
+
+
+_KEYWORD_PATTERNS: dict[str, re.Pattern[str]] = {
+    w: _keyword_pattern(w) for words in DOMAIN_KEYWORDS.values() for w in words
+}
+
+
+def _has(text: str, words: tuple[str, ...] | list[str]) -> bool:
+    return any((_KEYWORD_PATTERNS.get(w) or _keyword_pattern(w)).search(text) for w in words)
 
 
 def finalize(
@@ -285,14 +322,18 @@ def interpret(
         match = pattern.search(text)
         if match:
             targets[kind] = match.group(1)
-    domains = {d for d, words in DOMAIN_KEYWORDS.items() if any(w in text for w in words)}
+    domains = {d for d, words in DOMAIN_KEYWORDS.items() if _has(text, words)}
     if {"server", "kubernetes"} <= domains:
         specific = [w for w in DOMAIN_KEYWORDS["server"] if w not in AMBIGUOUS_SERVER_WORDS]
-        if not any(w in text for w in specific):
+        if not _has(text, specific):
             domains.discard("server")
-    if {"db", "service"} <= domains:
+    if {"server", "db"} <= domains:
+        specific = [w for w in DOMAIN_KEYWORDS["db"] if w not in AMBIGUOUS_DB_WORDS]
+        if not _has(text, specific):
+            domains.discard("db")
+    if {"db", "service"} <= domains and _has(text, DB_INTERNAL_WORDS):
         specific = [w for w in DOMAIN_KEYWORDS["service"] if w not in GENERIC_SLOW_WORDS]
-        if not any(w in text for w in specific):
+        if not _has(text, specific):
             domains.discard("service")
     return finalize(
         intent=intent,

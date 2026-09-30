@@ -291,7 +291,12 @@ class DbAgent:
         elif check.kind is Kind.COUNT:
             self._count(check, result, rows, ctx, col)
         else:
-            self._threshold(check, result, rows, col)
+            bound = (
+                await self._tool.max_bucket_bound(check.key, targets, ctx.time_range.end)
+                if self._unit(check.key) == "seconds"
+                else None
+            )
+            self._threshold(check, result, rows, col, bound)
 
     def _unit(self, key: str) -> str | None:
         return self._tool.item(key).unit
@@ -308,7 +313,13 @@ class DbAgent:
         result: ToolResult,
         rows: list[tuple[dict[str, str], float]],
         col: Collector,
+        top_bound: float | None = None,
     ) -> None:
+        """기준 판정.
+
+        `top_bound`는 지연 히스토그램의 최대 유한 버킷 경계입니다. p95가 이 값과 같으면 실제 값은
+        그 이상이므로 "N초 이상(히스토그램 최대 구간)"으로 표시합니다(Service Agent와 같은 표시).
+        """
         if check.warn is None:
             raise ValueError(f"{check.key}: 판정 기준이 정의되지 않았습니다")
         warn = check.warn(self._cfg)
@@ -319,15 +330,20 @@ class DbAgent:
         scope = (
             "현재" if not check.key.startswith(("db.pg_rollback", "db.pg_cache")) else "현재, 5분"
         )
+        saturated = 0
         for labels, value in bad[: self._cfg.top_n]:
             target = db_entity(labels)
             is_crit = crit is not None and value >= crit
             limit = fmt_value(crit if is_crit and crit is not None else warn, self._unit(check.key))
+            shown = self._show(check.key, value)
+            if top_bound is not None and value >= top_bound * (1 - 1e-9):
+                shown = f"{shown} 이상(히스토그램 최대 구간)"
+                saturated += 1
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,
                     statement=f"{check.label}({scope}): {target.name} "
-                    f"{self._show(check.key, value)} (기준 {limit} {'미만' if low else '이상'})",
+                    f"{shown} (기준 {limit} {'미만' if low else '이상'})",
                     severity=Severity.CRITICAL if is_crit else Severity.WARNING,
                     targets=(target,),
                     evidence_ids=(result.evidence_id,),
@@ -337,6 +353,12 @@ class DbAgent:
         if len(bad) > self._cfg.top_n:
             col.limit(
                 f"{check.key}: 기준을 벗어난 대상 {len(bad)}개 중 상위 {self._cfg.top_n}개만 표시"
+            )
+        if saturated:
+            col.limit(
+                f"{check.key}: p95가 히스토그램 최대 유한 구간 경계"
+                f"({fmt_value(top_bound or 0.0, 'seconds')})와 같은 대상 {saturated}개는 "
+                "실제 값이 그보다 클 수 있음"
             )
         if bad or not is_fresh(result, self._cfg):
             return  # 오래되었거나 최신성을 모르는 데이터로 "기준 이내"라고 판단하지 않음
@@ -456,10 +478,12 @@ class DbAgent:
             return
         before = {row_key(labels): v for labels, v in value_rows(base)}
         compared = 0
+        skipped = 0
         increased: list[tuple[float, float, dict[str, str]]] = []
         for labels, value in value_rows(cur):
             prev = before.get(row_key(labels))
             if prev is None or prev <= 0:
+                skipped += 1
                 continue
             compared += 1
             if (
@@ -469,6 +493,8 @@ class DbAgent:
                 increased.append((prev, value, labels))
         increased.sort(key=lambda x: -(x[1] - x[0]))
         ids = (cur.evidence_id, base.evidence_id)
+        if skipped:
+            col.limit(f"{key}: 기준 구간 값이 없거나 0인 대상 {skipped}개는 비교하지 않음")
         for prev, value, labels in increased[: self._cfg.top_n]:
             target = db_entity(labels)
             col.findings.append(

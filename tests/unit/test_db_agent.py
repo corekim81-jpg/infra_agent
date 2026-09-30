@@ -8,10 +8,12 @@ from pathlib import Path
 from expr_prom import ExprProm
 from infra_agent.agents.db import COUNT_NOTE, POOL_NOTE, SPAN_REUSED, DbAgent, db_entity
 from infra_agent.answer.render import render_text
+from infra_agent.answer.synthesis import synthesize
 from infra_agent.catalog import load_catalog
 from infra_agent.config import load_settings
 from infra_agent.config.settings import AnalysisConfig, HttpDatasourceConfig
 from infra_agent.datasources import PrometheusClient
+from infra_agent.orchestration.rules import interpret
 from infra_agent.orchestration.runner import answer_question
 from infra_agent.schemas import (
     AgentName,
@@ -260,12 +262,13 @@ async def test_latency_increase_for_anomaly_questions() -> None:
     assert ctx.baseline_range is not None
     op = {"service_name": "product-catalog", "db_operation_name": "SELECT"}
     span = {"service": "accounting", "db_system_name": "postgresql", "span_name": "INSERT"}
-    for mode, at, op_value, span_value in (
-        (QueryMode.WINDOW_AVG, ctx.time_range.end, 0.5, 0.21),
-        (QueryMode.BASELINE_AVG, ctx.baseline_range.end, 0.1, 0.2),
+    new_op = {"service_name": "product-catalog", "db_operation_name": "UPDATE"}
+    for mode, at, op_rows, span_value in (
+        (QueryMode.WINDOW_AVG, ctx.time_range.end, [(op, 0.5), (new_op, 0.3)], 0.21),
+        (QueryMode.BASELINE_AVG, ctx.baseline_range.end, [(op, 0.1)], 0.2),
     ):
         # 구간 평균과 기준 구간 평균은 조회식이 같고 평가 시각만 다름
-        fake.add(_expr("db.client_operation_latency_p95", ctx, mode), [(op, op_value)], at=at)
+        fake.add(_expr("db.client_operation_latency_p95", ctx, mode), op_rows, at=at)
         fake.add(_expr("db.span_latency_p95", ctx, mode), [(span, span_value)], at=at)
     result = await _run(ctx, fake)
     texts = [f.statement for f in result.findings]
@@ -275,6 +278,38 @@ async def test_latency_increase_for_anomaly_questions() -> None:
         for t in texts
     )
     assert any("pg_stat_statements 수집 설정 필요" in x for x in result.next_checks)
+    # 기준 구간에 없던 대상은 조용히 빼지 않고 한계에 적음
+    assert (
+        "db.client_operation_latency_p95: 기준 구간 값이 없거나 0인 대상 1개는 비교하지 않음"
+    ) in result.limitations
+    # 비교 질문 답변은 직전 구간 대비 결과를 먼저 요약 (DB만 실행된 경우도)
+    interp = interpret("DB 쿼리 지연이 늘었어?", NOW, timedelta(minutes=30))
+    assert interp.domains == {"db"} and interp.intent is Intent.ANOMALY
+    answer = synthesize("r1", interp, [result])
+    assert answer.summary.startswith("직전 같은 길이 구간 대비 기준 이상 증가한 대상 1건")
+
+
+async def test_latency_at_histogram_top_bucket_is_lower_bound() -> None:
+    ctx = _ctx()
+    fake = ExprProm()
+    _fill(ctx, fake)
+    fake.add(
+        _expr("db.client_operation_latency_p95", ctx),
+        [({"service_name": "product-catalog", "db_operation_name": "SELECT"}, 10.0)],
+    )
+    fake.add(
+        "count by (le) (db_client_operation_duration_seconds_bucket{})",
+        [({"le": le}, 1.0) for le in ("0.1", "1", "10", "+Inf")],
+    )
+    result = await _run(ctx, fake)
+    assert (
+        "DB 작업 지연 p95(현재): product-catalog SELECT 10초 이상(히스토그램 최대 구간) "
+        "(기준 1초 이상)"
+    ) in [f.statement for f in result.findings]
+    assert any(
+        x.startswith("db.client_operation_latency_p95: p95가 히스토그램 최대 유한 구간 경계(10초)")
+        for x in result.limitations
+    )
 
 
 def test_entity_names() -> None:

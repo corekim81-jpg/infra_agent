@@ -55,7 +55,8 @@ async def test_service_then_db(settings: Settings) -> None:
         use_llm=False,
     )
     assert [r.agent for r in bundle.results] == [AgentName.SERVICE, AgentName.DB]
-    assert all(r.status is AgentStatus.SUCCESS for r in bundle.results), [
-        e.message for r in bundle.results for e in r.errors
-    ]
+    service, db = bundle.results
+    # Service는 Loki·Tempo 일부 실패로 PARTIAL일 수 있음. DB는 Service가 끝난 뒤 실행되어야 함
+    assert service.status in (AgentStatus.SUCCESS, AgentStatus.PARTIAL), service.errors
+    assert db.status is AgentStatus.SUCCESS, [e.message for e in db.errors]
     print("\n" + render_text(bundle))

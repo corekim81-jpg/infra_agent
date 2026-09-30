@@ -1,7 +1,7 @@
 # 개발 가이드
 
 > **상태: 10단계 진행 중 (#25).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25)가 있습니다.
-> Network·DB 에이전트는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> Network 에이전트와 Kubernetes API 연동은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경

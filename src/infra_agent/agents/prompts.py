@@ -14,6 +14,8 @@ COORDINATOR_INTERPRET_PROMPT = """당신은 인프라 운영 분석 시스템의
 - domains: 질문이 다루는 분야 (server=노드·Pod·컨테이너 CPU/메모리/디스크 자원,
   kubernetes=Pod 상태·재시작·Pending·OOM·이벤트·배포, network=네트워크·DNS·패킷 드롭,
   db=DB·커넥션 풀·쿼리·잠금·캐시(Valkey), service=서비스 요청·오류율·응답 시간·로그·트레이스)
+  "쿼리·커넥션이 느려졌는지"처럼 DB 내부만 물으면 db만, "서비스(응답)가 느린 이유가 DB인지"처럼
+  서비스 지연의 원인을 물으면 service와 db를 함께 넣습니다. "노드 메모리 캐시"는 server입니다.
 JSON만 출력합니다."""
 
 COMMON_RULES = """공통 규칙:
