@@ -22,7 +22,7 @@ import asyncio
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from infra_agent.catalog import Catalog, CatalogItem
@@ -115,6 +115,7 @@ class CatalogQueryTool:
         self._timeout = timeout_seconds
         self._freshness_cache: dict[str, float | None] = {}
         self._coverage_cache: dict[tuple[str, str], int | None] = {}
+        self._bounds_cache: dict[tuple[str, str], float | None] = {}
 
     def item(self, key: str) -> CatalogItem:
         item = self._catalog.items.get(key)
@@ -245,6 +246,135 @@ class CatalogQueryTool:
                 unit=item.unit,
             )
         )
+
+    async def series_peaks(
+        self,
+        key: str,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        window: TimeRange,
+        max_points: int = 60,
+        label: str | None = None,
+    ) -> QueryOutcome:
+        """구간 시계열을 조회해 대상별 최댓값과 그 시각(`peak_at`)을 돌려줍니다.
+
+        "오류가 증가한 시간대"처럼 구간 안의 시점을 찾을 때 씁니다. 평가식은 `current`와 같습니다
+        (rate 계열은 `RATE_RANGE`). 근거 ID는 `<key>@series` 또는 `<key>@series:<label>`
+        (같은 항목을 대상별로 여러 번 조회할 때 구분).
+        """
+        item = self.item(key)
+        evidence_id = f"{key}@series" + (f":{label}" if label else "")
+        selector, unsupported = item.selector_for(targets)
+        if unsupported:
+            return QueryOutcome(
+                result=ToolResult(
+                    evidence_id=evidence_id,
+                    source=DataSourceKind.PROMETHEUS,
+                    query="",
+                    time_range=window,
+                    status=ToolStatus.ERROR,
+                    fetched_at=utc_now(),
+                    error="대상 필터를 적용할 수 없어 조회하지 않음: "
+                    + ", ".join(k.value for k in unsupported),
+                ),
+                unsupported_targets=unsupported,
+                skipped=True,
+            )
+        expr = self.build_expr(item, selector, QueryMode.CURRENT, ctx)
+        step = max(60, int(window.duration.total_seconds() // max(1, max_points)))
+        freshness = await self.freshness(item, window.end)
+
+        def failed(status: ToolStatus, error: str) -> QueryOutcome:
+            return QueryOutcome(
+                result=ToolResult(
+                    evidence_id=evidence_id,
+                    source=DataSourceKind.PROMETHEUS,
+                    query=expr,
+                    time_range=window,
+                    status=status,
+                    fetched_at=utc_now(),
+                    freshness_seconds=freshness,
+                    error=error,
+                )
+            )
+
+        if not self._budget.take():
+            return failed(
+                ToolStatus.ERROR,
+                "요청당 조회 호출 상한(analysis.max_tool_calls)에 도달해 조회하지 않음",
+            )
+        try:
+            series = await asyncio.wait_for(
+                self._prom.query_range(expr, window.start, window.end, step),
+                timeout=self._timeout,
+            )
+        except TimeoutError:
+            return failed(ToolStatus.TIMEOUT, f"조회 제한 시간({self._timeout:.0f}초) 초과")
+        except DataSourceError as exc:
+            status = ToolStatus.TIMEOUT if exc.code == "timeout" else ToolStatus.ERROR
+            return failed(status, f"{exc.code}: {exc.message}")
+        rows = []
+        for s in series:
+            points = [(ts, v) for ts, v in s.points if not (math.isnan(v) or math.isinf(v))]
+            if not points:
+                continue
+            ts, value = max(points, key=lambda p: p[1])
+            rows.append(
+                {
+                    "labels": s.labels,
+                    "value": value,
+                    "peak_at": datetime.fromtimestamp(ts, tz=UTC).isoformat(),
+                }
+            )
+        return QueryOutcome(
+            result=ToolResult(
+                evidence_id=evidence_id,
+                source=DataSourceKind.PROMETHEUS,
+                query=expr,
+                time_range=window,
+                status=ToolStatus.OK if rows else ToolStatus.EMPTY,
+                data=rows,
+                fetched_at=utc_now(),
+                freshness_seconds=freshness,
+                unit=item.unit,
+            )
+        )
+
+    async def max_bucket_bound(
+        self, key: str, targets: Mapping[TargetKind, str], at: datetime
+    ) -> float | None:
+        """히스토그램 항목의 가장 큰 유한 버킷 경계(`le`). 확인하지 못하면 None.
+
+        `histogram_quantile` 결과가 이 값과 같으면 실제 분위수는 그 이상(마지막 +Inf 구간)일 수
+        있어, 값을 그대로 "지연 N초"로 보고하지 않기 위해 씁니다.
+        """
+        item = self.item(key)
+        metric = next((m for m in item.requires_metrics if m.endswith("_bucket")), None)
+        if metric is None:
+            return None
+        selector, unsupported = item.selector_for(targets)
+        if unsupported:
+            return None
+        cache_key = (metric, selector)
+        if cache_key not in self._bounds_cache:
+            if not self._budget.take():
+                return None
+            expr = f"count by (le) ({metric}{{{selector}}})"
+            try:
+                result = await asyncio.wait_for(self._prom.query(expr, at), timeout=self._timeout)
+            except (TimeoutError, DataSourceError):
+                self._bounds_cache[cache_key] = None
+            else:
+                bounds = []
+                for s in result.samples:
+                    try:
+                        value = float(s.labels.get("le", ""))
+                    except ValueError:
+                        continue
+                    if math.isfinite(value):
+                        bounds.append(value)
+                self._bounds_cache[cache_key] = max(bounds) if bounds else None
+        return self._bounds_cache[cache_key]
 
     async def coverage(
         self, key: str, targets: Mapping[TargetKind, str], at: datetime

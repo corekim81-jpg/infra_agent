@@ -28,6 +28,7 @@ from infra_agent.schemas import (
     ToolResult,
     ToolStatus,
 )
+from infra_agent.units import fmt_time
 
 NOW = datetime(2026, 9, 29, 3, 0, tzinfo=UTC)
 CTX = AnalysisContext(
@@ -119,6 +120,12 @@ async def test_valid_hypothesis_kept_invalid_rejected() -> None:
     assert "이미 답변에 포함된 추가 확인 사항" in prompt
     assert fake.requests[0].system == SERVER_SYSTEM_PROMPT
     assert "Kubernetes Agent" in SERVER_SYSTEM_PROMPT and "APM" in SERVER_SYSTEM_PROMPT
+    # 분석 구간은 답변과 같은 표시 시각대로 주고 UTC는 참고로만 붙임
+    start, end = CTX.time_range.start, CTX.time_range.end
+    assert f"분석 구간: {fmt_time(start)} ~ {fmt_time(end)} (UTC " in prompt
+    # 구현된 에이전트를 "미구현"으로 안내하지 않음
+    assert "Service Agent(미구현" not in SERVER_SYSTEM_PROMPT
+    assert "Network Agent(미구현" in SERVER_SYSTEM_PROMPT
 
 
 async def test_policy_none_and_errors() -> None:
@@ -133,11 +140,21 @@ async def test_policy_none_and_errors() -> None:
     assert "형식 오류" in out3.limitations[0]
 
 
-def test_not_needed_without_anomalies() -> None:
+async def test_not_needed_without_anomalies() -> None:
+    from infra_agent.agents.common import NO_ANOMALY_NO_HYPOTHESIS, with_explanation
+
     info = RESULT.model_copy(
         update={"findings": (WARN.model_copy(update={"severity": Severity.INFO}),)}
     )
-    assert not _explainer(FakeLLM({})).needed(info)
+    fake = FakeLLM({})
+    assert not _explainer(fake).needed(info)
+    # 이상 징후가 없으면 모델을 부르지 않고, 원인을 묻는 질문이면 그 이유를 한계에 적음
+    plain = await with_explanation(info, _explainer(fake), CTX)
+    assert plain.limitations == () and not fake.requests
+    why = CTX.model_copy(update={"question": "서비스가 느려진 원인이 뭐야?"})
+    cause = await with_explanation(info, _explainer(fake), why)
+    assert cause.limitations == (NO_ANOMALY_NO_HYPOTHESIS,) and not fake.requests
+    assert (await with_explanation(info, None, why)).limitations == ()  # 모델 미설정
 
 
 def test_duplicate_check() -> None:

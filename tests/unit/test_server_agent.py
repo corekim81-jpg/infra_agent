@@ -225,15 +225,15 @@ async def test_answer_question_end_to_end() -> None:
     assert "구간 집계 항목" not in text  # 서버 상태 질문에는 구간 집계 항목이 없음
 
     other = await answer_question(
-        "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘",
+        "네트워크 패킷 드롭이나 DNS 문제 있어?",
         settings,
         CATALOG,
         now=NOW,
         transport=fake.transport(),
     )
-    assert other.results == ()  # 서버 분야가 아니므로 실행하지 않음
+    assert other.results == ()  # 구현된 에이전트가 없는 분야이므로 실행하지 않음
     assert "답할 수 없습니다" in other.answer.summary
-    assert len(other.answer.unverified_areas) == 3
+    assert len(other.answer.unverified_areas) == 1
     assert "- 실행한 조회 없음" in render_text(other)
     assert other.runs == () and "에이전트 실행" not in render_text(other)
 

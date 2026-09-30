@@ -64,7 +64,7 @@
 - `llm` 섹션(#15): `provider`(`fake`=모델 없음, `claude_agent_sdk`), `model`(`null`이면 SDK 기본값), `data_policy`(`none`·`aggregated`·`full`, architecture.md 10.2절), `max_calls_per_request`(요청당 모델 호출 상한), `max_budget_usd_per_request`(SDK에 호출마다 전달하는 비용 상한). 예시 파일은 개발 환경 결정에 따라 `claude_agent_sdk`·`full`입니다. 운영 설정에는 그대로 쓰지 않습니다.
   - SDK 설치: `python -m pip install -e ".[llm]"`. SDK는 Claude Code CLI를 실행하므로 CLI 인증(`ANTHROPIC_API_KEY` 또는 Claude Code 로그인)이 필요합니다.
   - SDK가 없거나 CLI를 실행할 수 없으면 규칙 기반 경로로 계속하고 답변에 그 사실을 표시합니다. `ask --no-llm`으로 모델 없이 실행할 수 있습니다.
-- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한 100(#21에서 60→100: 에이전트들이 공유하며 최신성·대상 존재 확인 조회 포함)). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
+- `analysis` 섹션(#11): 판정 기준(사용률 경고 0.8·심각 0.9, 스로틀링 0.25, 직전 구간 대비 증가 50%와 최소 증가량 CPU 0.05 cores·메모리 100MiB, 데이터 지연 기준 300초, 표시 대상 수, 요청당 조회 상한 100(#21에서 60→100: 에이전트들이 공유하며 최신성·대상 존재 확인 조회 포함), Service 기준(#23: 오류율 경고 5%·심각 20%, p95 지연 경고 1초, 오류율 판정 최소 요청률 0.01건/초, 오류율 증가 2%p, 지연 증가 0.1초, 상세 서비스 3개, 최고 시점 전후 600초, 로그·트레이스 샘플 3건)). 값은 개발 환경용 제안 기본값이며 운영 환경에 맞게 조정해야 합니다.
 
 ### 2.4 환경 변수
 
@@ -123,7 +123,15 @@
 ### 3.4 Loki, Tempo
 
 - **Loki 라벨:** `service_name`(18개), `service_namespace`, `k8s_namespace_name`, `k8s_deployment_name`, `k8s_cluster_name`, `deployment_environment_name`.
-  **Kubernetes 이벤트가 Loki에 저장되는지는 아직 확인되지 않았습니다**(라벨 이름만으로는 판단 불가). Kubernetes Agent 단계(8단계)에서 LogQL로 확인합니다.
+  **Kubernetes 이벤트가 Loki에 저장되는지는 아직 확인되지 않았습니다**(라벨 이름만으로는 판단 불가).
+- **Service Agent의 Loki 사용(#23):** 카탈로그 `log.lines_total`·`log.error_lines`·`log.error_samples`(대상 라벨 `service_name`, `k8s_namespace_name`). 오류 판정은 본문 키워드(error, exception, fatal, panic, 단어 단위) 기준이며, 레벨 필드(`severity_text`·`detected_level`)가 INFO·DEBUG·TRACE인 줄은 제외합니다. 개발 서버 live 결과(2026-09-30): 로그가 있는 서비스 18개, 앱 로그 샘플에 trace_id가 있음(로그↔트레이스 연결 가능), OTLP 로그에 레벨 필드가 있음. 키워드만으로는 INFO 로그의 단어 일부(`...Error`)가 오류로 잡혔으나, 단어 단위 매칭과 레벨 제외를 적용한 뒤 live 재실행에서 조회식이 정상 동작하고 해당 오탐(product-reviews)이 0건이 됨을 확인했습니다. 두 레벨 필드 중 어느 쪽이 제외에 쓰였는지는 따로 확인하지 않았습니다.
+- **호출·소비만 하는 서비스:** fraud-detection처럼 SERVER span 없이 CLIENT·CONSUMER span만 있는 서비스가 있습니다. Service Agent는 요청량·오류율 판정은 SERVER span 기준으로 하되, 로그·트레이스 상세 확인 대상은 span 종류와 관계없이 spanmetrics에 나타난 서비스로 봅니다.
+- **스트리밍 호출의 현재 값 변동:** flagd EventStream 호출은 약 600초 유지된 뒤 오류 상태로 끝나는 트레이스로 기록됩니다(live에서 600001~600006ms 확인). span은 호출이 끝날 때 기록되므로, 현재(5분 rate) 오류율·지연은 최근 5분 안에 스트림이 끝났는지에 따라 나타났다 사라집니다(live 2026-09-30: 13:03 실행에서는 CLIENT 오류 100%와 12.8초 이상 지연, 13:27 실행에서는 둘 다 없음). 분석 구간의 오류 트레이스에는 계속 나타나므로, Service Agent는 로그·트레이스 상세 대상을 고를 때 오류 트레이스의 루트 서비스도 사용합니다.
+- **계측되지 않은 호출 대상:** service graph의 `server`에는 postgresql처럼 spanmetrics에 없는(계측되지 않은) 대상이 나옵니다. live(2026-09-30)에서 accounting → postgresql 호출 실패율이 6.5%로 기준을 넘었을 때, 응답한 쪽(postgresql)의 로그·트레이스는 없으므로 Service Agent는 호출한 쪽(accounting)을 상세 확인합니다.
+- **Tempo 루트 span 미수신 표시:** 오류 트레이스 검색 결과의 루트 서비스가 `<root span not yet received>`로 오는 트레이스가 있습니다(루트 span이 아직 수집되지 않음). 서비스 이름이 아니므로 상세 대상에서 제외합니다.
+- **클러스터 객체 로그:** 앱 서비스가 아닌 로그 출처 하나가 `service_name` 라벨로 들어오며, 내용은 Kubernetes 이벤트가 아니라 Pod 객체 JSON 전체입니다(k8s 객체 수집으로 보임). Service Agent는 이를 서비스 상세 확인에서 제외합니다. Pod 상태(종료 사유 등)를 담고 있어 Kubernetes Agent의 종료 사유 확인 경로로 검토할 수 있습니다.
+- **Tempo service graph 지연 히스토그램:** 최대 유한 버킷이 12.8초로, p95가 12.8초이면 실제 값은 그 이상입니다. flagd EventStream처럼 수 분간 열려 있는 스트리밍 호출이 여기에 해당합니다.
+- **Service Agent의 Tempo 사용(#23):** `/api/search` TraceQL `{ resource.service.name = "<서비스>" && status = error }`(서비스 이름 형식 검사 후 리터럴로만 삽입). 검색 응답의 `traceID`는 앞자리 0을 뺀 16진수로 옵니다(live에서 31자리 값 확인). 로그의 trace_id(32자리)와 연결하려고 양쪽 모두 앞을 0으로 채운 32자리로 맞춥니다.
 - **Tempo 태그:** resource 42개(`service.name`, `k8s.*` 등), span 149개(`db.system`, `db.statement`, `db.query.text`, `http.*`, `rpc.*` 등), event 16개(`exception.*` 등).
   `db.statement`·`db.query.text`에는 **SQL 원문**이 담기므로 모델 입력 데이터 정책(architecture.md 10.2절) 결정 시 함께 고려합니다.
 

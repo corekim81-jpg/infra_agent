@@ -166,11 +166,30 @@ class AnalysisConfig(_Strict):
     """답변에 표시할 대상 수 상한."""
     max_tool_calls: int = Field(default=100, ge=1, le=1000)
     """요청당 도구(조회) 호출 상한."""
+    # --- Service Agent (#23)
+    error_ratio_warning: float = Field(default=0.05, gt=0, le=1)
+    """서비스·호출 경로 오류율 경고 기준 (오류 span / 전체 span)."""
+    error_ratio_critical: float = Field(default=0.2, gt=0, le=1)
+    latency_p95_warning_seconds: float = Field(default=1.0, gt=0)
+    """p95 지연 경고 기준(초)."""
+    min_request_rate: float = Field(default=0.01, ge=0)
+    """오류율을 판정할 최소 요청률(건/초). 요청이 너무 적은 서비스의 비율 변동을 무시하기 위함."""
+    min_error_ratio_increase: float = Field(default=0.02, ge=0, le=1)
+    """직전 구간 대비 오류율 증가로 판단할 최소 증가폭 (0.02 = 2%p)."""
+    min_latency_increase_seconds: float = Field(default=0.1, ge=0)
+    detail_services: int = Field(default=3, ge=0, le=10)
+    """로그·트레이스를 자세히 볼 오류 서비스 수 상한."""
+    peak_window_seconds: int = Field(default=600, ge=60, le=86400)
+    """오류율 최고 시점 전후로 로그·트레이스를 볼 구간 길이."""
+    log_sample_limit: int = Field(default=3, ge=0, le=20)
+    trace_sample_limit: int = Field(default=3, ge=0, le=20)
 
     @model_validator(mode="after")
     def _order(self) -> Self:
         if self.utilization_warning >= self.utilization_critical:
             raise ValueError("utilization_warning은 utilization_critical보다 작아야 합니다")
+        if self.error_ratio_warning >= self.error_ratio_critical:
+            raise ValueError("error_ratio_warning은 error_ratio_critical보다 작아야 합니다")
         return self
 
 

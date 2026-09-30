@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 8단계 진행 중 (#21).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21)가 있습니다.
-> Network·DB·Service 에이전트는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 9단계 진행 중 (#23; 8단계 #21 검토 중).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23)가 있습니다.
+> Network·DB 에이전트는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -72,7 +72,7 @@ infra_agent/
 │  ├─ tools/                    # 읽기 전용 도구 정의, 에이전트별 허용 목록
 │  ├─ units.py                  # 단위 표시 형식 (답변·모델 관측 데이터 공통)
 │  ├─ analysis/                 # 기준 구간 비교, 임계값 판정 등 결정적 분석
-│  ├─ agents/                   # base(인터페이스), common(수집·결과 정리), server, kubernetes, (이후) network, db, service
+│  ├─ agents/                   # base(인터페이스), common(수집·결과 정리), server, kubernetes, service, (이후) network, db
 │  │  └─ prompts.py             # 역할별 지침
 │  ├─ orchestration/            # 질문 해석, 실행 계획(plan), 실행기(executor), runner
 │  ├─ answer/                   # 결과 종합, 근거 검증, 답변 렌더링
@@ -146,7 +146,7 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 완료 (#19, PR #20; 개발 서버 live 12건 통과 2026-09-29) |
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 진행 중 (#21; 이벤트는 수집 위치 미확인으로 제외, 사용자 환경 live 확인 필요) |
 | 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트, 권한 점검, `k8s_*` 도구 | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 계획 |
-| 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 계획 |
+| 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 진행 중 (#23; 사용자 환경 live 확인 필요) |
 | 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 계획 |
 | 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 계획 |
 | 12 | 교차 분석과 품질 평가 | Service → (Network ∥ DB) 흐름, 결과 종합, README 대표 질문 평가 세트 | 대표 질문 7개 평가 기록 | 8–11 | 계획 |

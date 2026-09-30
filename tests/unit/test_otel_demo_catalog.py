@@ -42,7 +42,7 @@ def test_no_assumed_or_excluded_metric_families(catalog: Catalog) -> None:
 
 def test_evidence_and_targets(catalog: Catalog) -> None:
     for key, item in catalog.items.items():
-        assert item.source is DataSourceKind.PROMETHEUS, key
+        assert item.source in (DataSourceKind.PROMETHEUS, DataSourceKind.LOKI), key
         assert item.evidence.status in (EvidenceStatus.DISCOVERED, EvidenceStatus.VERIFIED), key
         assert item.evidence.checked_at is not None, key
         assert item.target_labels, key
@@ -51,7 +51,7 @@ def test_evidence_and_targets(catalog: Catalog) -> None:
 
 def test_rate_like_queries_use_range(catalog: Catalog) -> None:
     for key, item in catalog.items.items():
-        needs_range = any(f in item.query for f in ("rate(", "increase("))
+        needs_range = any(f in item.query for f in ("rate(", "increase(", "count_over_time("))
         assert needs_range == item.uses_range, key
 
 
@@ -90,3 +90,14 @@ def test_verified_items_have_no_open_unit_caveat(catalog: Catalog) -> None:
     assert verified == {"node.cpu_usage", "container.cpu_usage"}
     for key in verified:
         assert not any("검증 필요" in c for c in catalog.items[key].caveats), key
+
+
+def test_loki_items(catalog: Catalog) -> None:
+    loki = {k: v for k, v in catalog.items.items() if v.source is DataSourceKind.LOKI}
+    assert set(loki) == {"log.lines_total", "log.error_lines", "log.error_samples"}
+    for key, item in loki.items():
+        assert item.agent.value == "service", key
+        assert item.requires_metrics == (), key
+        assert item.target_labels[TargetKind.SERVICE] == "service_name", key
+    # 샘플 조회는 로그 조회식(구간 집계 없음)
+    assert not loki["log.error_samples"].uses_range
