@@ -7,7 +7,8 @@
 | full | + 결과 행의 전체 라벨, 실행한 조회식, 로그·트레이스 발췌(근거당 5건) |
 
 각 행에는 원값(`value`)과 답변과 같은 형식의 표시값(`display`, 예: 0.9%, 11.5GiB)을
-함께 넣어 모델이 직접 환산하지 않게 합니다. 근거별 전체 행 수(`rows_total`)와
+함께 넣어 모델이 직접 환산하지 않게 합니다. 시각(구간·로그·트레이스)과 트레이스 지속 시간도
+답변과 같은 표시 시각대·단위의 `*_display` 값을 함께 넣습니다. 근거별 전체 행 수(`rows_total`)와
 전달 행 수(`rows_sent`)를 표시해 전달되지 않은 대상이 있음을 알립니다.
 모든 조회 데이터는 비밀값 마스킹을 거친 뒤 `<observed_data>`로 격리하며,
 지침에서 데이터 속 문장을 지시로 따르지 않도록 명시합니다.
@@ -17,13 +18,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from infra_agent.config.settings import DataPolicy
 from infra_agent.schemas import AgentResult, ToolResult
 from infra_agent.security import redact
 from infra_agent.tools import rows_of, value_rows
-from infra_agent.units import fmt_value
+from infra_agent.units import fmt_time, fmt_value
 
 TARGET_LABELS = frozenset(
     {
@@ -59,6 +61,9 @@ def _evidence(e: ToolResult, policy: DataPolicy) -> dict[str, Any]:
     }
     if e.time_range is not None:
         item["time_range"] = [e.time_range.start.isoformat(), e.time_range.end.isoformat()]
+        item["time_range_display"] = (
+            f"{fmt_time(e.time_range.start)} ~ {fmt_time(e.time_range.end)}"
+        )
     if e.error:
         item["error"] = e.error
     all_rows = value_rows(e)
@@ -81,10 +86,26 @@ def _evidence(e: ToolResult, policy: DataPolicy) -> dict[str, Any]:
     if samples:
         # 로그·트레이스 발췌는 도구 계층에서 마스킹·길이 제한을 거친 값입니다.
         if policy is DataPolicy.FULL:
-            item["samples"] = samples[:MAX_SAMPLES]
+            item["samples"] = [_with_display(row) for row in samples[:MAX_SAMPLES]]
         else:
             item["samples_count"] = len(samples)
     return item
+
+
+def _with_display(row: dict[str, Any]) -> dict[str, Any]:
+    """발췌 행에 답변과 같은 형식의 시각·지속 시간 표시값을 붙입니다 (모델이 환산하지 않게)."""
+    out = dict(row)
+    for key in ("time", "start"):
+        value = row.get(key)
+        if isinstance(value, str):
+            try:
+                out[f"{key}_display"] = fmt_time(datetime.fromisoformat(value))
+            except ValueError:
+                continue
+    duration = row.get("duration_ms")
+    if isinstance(duration, int | float):
+        out["duration_display"] = fmt_value(float(duration) / 1000, "seconds")
+    return out
 
 
 def sample_rows(e: ToolResult) -> list[dict[str, Any]]:

@@ -28,6 +28,7 @@ from infra_agent.schemas import (
     ToolResult,
     ToolStatus,
 )
+from infra_agent.units import fmt_time
 
 NOW = datetime(2026, 9, 29, 3, 0, tzinfo=UTC)
 CTX = AnalysisContext(
@@ -119,6 +120,12 @@ async def test_valid_hypothesis_kept_invalid_rejected() -> None:
     assert "이미 답변에 포함된 추가 확인 사항" in prompt
     assert fake.requests[0].system == SERVER_SYSTEM_PROMPT
     assert "Kubernetes Agent" in SERVER_SYSTEM_PROMPT and "APM" in SERVER_SYSTEM_PROMPT
+    # 분석 구간은 답변과 같은 표시 시각대로 주고 UTC는 참고로만 붙임
+    start, end = CTX.time_range.start, CTX.time_range.end
+    assert f"분석 구간: {fmt_time(start)} ~ {fmt_time(end)} (UTC " in prompt
+    # 구현된 에이전트를 "미구현"으로 안내하지 않음
+    assert "Service Agent(미구현" not in SERVER_SYSTEM_PROMPT
+    assert "Network Agent(미구현" in SERVER_SYSTEM_PROMPT
 
 
 async def test_policy_none_and_errors() -> None:

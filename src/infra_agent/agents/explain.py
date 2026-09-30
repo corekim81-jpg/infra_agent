@@ -33,6 +33,7 @@ from infra_agent.schemas import (
     Severity,
 )
 from infra_agent.security import redact
+from infra_agent.units import fmt_time
 
 MIN_EXPLAIN_SECONDS = 5.0
 """에이전트 제한 시간 안에 남은 시간이 이보다 적으면 모델 해석을 생략합니다."""
@@ -147,11 +148,14 @@ class AgentExplainer:
         observed = build_observations([result], self._policy)
         if observed is None:
             return out  # data_policy=none: 조회 결과를 모델에 보내지 않음
-        window = f"{ctx.time_range.start.isoformat()} ~ {ctx.time_range.end.isoformat()}"
+        window = (
+            f"{fmt_time(ctx.time_range.start)} ~ {fmt_time(ctx.time_range.end)} "
+            f"(UTC {ctx.time_range.start.isoformat()} ~ {ctx.time_range.end.isoformat()})"
+        )
         existing_checks = "\n".join(f"- {c}" for c in result.next_checks) or "- (없음)"
         prompt = (
             f"질문: {ctx.question}\n"
-            f"분석 구간(UTC): {window}\n"
+            f"분석 구간: {window}\n"
             f"{DATA_GUARD}\n\n{observed}\n\n"
             f"이미 답변에 포함된 추가 확인 사항 (같은 내용은 다시 제안하지 마세요):\n"
             f"{existing_checks}\n\n"

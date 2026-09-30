@@ -35,6 +35,7 @@ from infra_agent.tools import (
     TraceSearchTool,
     build_traceql,
 )
+from infra_agent.units import fmt_time
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = load_catalog(ROOT / "config/catalog/otel-demo.yaml")
@@ -450,6 +451,11 @@ async def test_observations_include_samples_only_with_full_policy() -> None:
     assert "redis timeout" in full and TRACE_A in full
     assert "redis timeout" not in aggregated and '"samples_count": 2' in aggregated
     assert "hunter22" not in full
+    # 시각·지속 시간은 답변과 같은 표시값을 함께 전달 (모델이 UTC를 쓰거나 환산하지 않게)
+    assert f'"start_display": "{fmt_time(PEAK)}"' in full
+    assert '"duration_display": "1.23초"' in full
+    assert f'"time_display": "{fmt_time(PEAK)}"' in full
+    assert f'"time_range_display": "{fmt_time(FOCUS.start)} ~ {fmt_time(FOCUS.end)}"' in full
 
 
 async def test_answer_question_service_flow() -> None:
