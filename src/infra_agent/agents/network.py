@@ -15,6 +15,9 @@
 - 흐름 판정 비율: 네임스페이스 쌍별 DROPPED·ERROR 판정 흐름 비율(`flow_drop_ratio_warning`,
   흐름이 `min_request_rate`보다 적은 쌍은 제외)
 - 현재 값(판정 없음): TCP RST 패킷, DNS 질의량
+- `benign_drop_reasons`에 있는 드롭 사유(기본 UNSUPPORTED_L3_PROTOCOL)는 발생 수를 그대로 보이되
+  경고가 아닌 정보로 표시합니다.
+- DNS 질의가 0이면 Hubble DNS 가시성 미적용 가능성을 한계에 적습니다(실제 질의 0으로 단정하지 않음).
 - Hubble 이벤트 유실이 있으면 Hubble 기반 결과가 불완전하다고 한계에 적습니다.
 - 결과가 없거나 오래된 데이터로는 "정상"이라고 판단하지 않습니다.
 """
@@ -73,6 +76,10 @@ HUBBLE_KEYS = frozenset(
     }
 )
 UNKNOWN_PEER = "외부·미확인"
+DNS_ZERO_NOTE = (
+    "network.dns_query_rate: DNS 질의가 0건/초로 집계됨. Hubble DNS 지표는 DNS 가시성(L7 DNS "
+    "프록시 정책)이 적용된 흐름만 집계하므로, 실제 DNS 질의가 없다는 뜻이 아닐 수 있음"
+)
 BAD_VERDICTS = frozenset({"DROPPED", "ERROR"})
 """문제로 보는 흐름 판정 값 (Hubble verdict)."""
 
@@ -99,9 +106,13 @@ def _peer(labels: Mapping[str, str], side: str) -> str:
     return namespace or workload or UNKNOWN_PEER
 
 
-def network_entity(labels: Mapping[str, str]) -> TargetRef:
-    """결과 라벨로 대상 이름을 만듭니다 (흐름 출발 → 도착, 노드 인터페이스, Pod)."""
-    if any(k.startswith(("source_", "destination_")) for k in labels):
+def network_entity(labels: Mapping[str, str], flow: bool = False) -> TargetRef:
+    """결과 라벨로 대상 이름을 만듭니다 (흐름 출발 → 도착, 노드 인터페이스, Pod).
+
+    `flow=True`(Hubble 항목)이면 출발·도착 라벨이 없어도 흐름으로 봅니다. Prometheus는 빈 값
+    라벨을 결과에서 빼므로, 출발·도착을 모르는 드롭은 `reason` 라벨만 남습니다.
+    """
+    if flow or any(k.startswith(("source_", "destination_")) for k in labels):
         has_workload = labels.get("source_workload") or labels.get("destination_workload")
         kind = TargetKind.WORKLOAD if has_workload else TargetKind.NAMESPACE
         name = f"{_peer(labels, 'source')} → {_peer(labels, 'destination')}"
@@ -270,18 +281,40 @@ class NetworkAgent:
             return
         result, rows = fetched
         scope = window_text(ctx)
-        # increase() 추정 오차로 생기는 아주 작은 값은 발생으로 보지 않음
-        happened = sorted((r for r in rows if r[1] >= 0.5), key=lambda r: -r[1])
+        flow = check.key in HUBBLE_KEYS
+        benign_reasons = {r.upper() for r in self._cfg.benign_drop_reasons}
+
+        def is_benign(labels: Mapping[str, str]) -> bool:
+            return check.key == "network.drops_increase" and (
+                labels.get("reason", "").upper() in benign_reasons
+            )
+
+        # increase() 추정 오차로 생기는 아주 작은 값은 발생으로 보지 않음.
+        # 경고 대상(비장애성 사유가 아닌 것)을 먼저 보입니다.
+        happened = sorted((r for r in rows if r[1] >= 0.5), key=lambda r: (is_benign(r[0]), -r[1]))
+        benign_seen: set[str] = set()
         for labels, value in happened[: self._cfg.top_n]:
-            target = network_entity(labels)
-            reason = f" (사유 {labels['reason']})" if labels.get("reason") else ""
+            target = network_entity(labels, flow=flow)
+            benign = is_benign(labels)
+            reason = ""
+            if labels.get("reason"):
+                note = ", 비장애성 사유로 설정되어 정보로 표시" if benign else ""
+                reason = f" (사유 {labels['reason']}{note})"
+            if benign:
+                benign_seen.add(labels["reason"])
             col.findings.append(
                 self._fact(
-                    f"{check.label} ({scope}): {target.name} {count_text(value)}{reason}",
+                    f"{check.label} ({scope}){self._suffix_for(check.key)}: {target.name} "
+                    f"{count_text(value)}{reason}",
                     result,
-                    Severity.WARNING,
+                    Severity.INFO if benign else Severity.WARNING,
                     target,
                 )
+            )
+        if benign_seen:
+            col.limit(
+                f"{check.key}: 드롭 사유 {', '.join(sorted(benign_seen))}는 "
+                "analysis.benign_drop_reasons 설정에 따라 경고가 아닌 정보로 표시함"
             )
         if happened:
             col.limit(COUNT_NOTE)
@@ -345,7 +378,7 @@ class NetworkAgent:
         warn = self._cfg.flow_drop_ratio_warning
         exceeded = sorted(((p, r) for p, r in ratios.items() if r >= warn), key=lambda x: -x[1])
         for pair, ratio in exceeded[: self._cfg.top_n]:
-            target = network_entity(pair_labels[pair])
+            target = network_entity(pair_labels[pair], flow=True)
             col.findings.append(
                 self._fact(
                     f"흐름 드롭·오류 판정 비율(현재, 5분): {target.name} "
@@ -360,10 +393,11 @@ class NetworkAgent:
         if exceeded or not is_fresh(result, self._cfg):
             return
         worst, worst_ratio = max(ratios.items(), key=lambda kv: kv[1])
+        worst_name = network_entity(pair_labels[worst], flow=True).name
         worst_text = (
             "드롭·오류 판정 없음"
             if worst_ratio == 0
-            else f"최대 {network_entity(pair_labels[worst]).name} {fmt_value(worst_ratio, 'ratio')}"
+            else f"최대 {worst_name} {fmt_value(worst_ratio, 'ratio')}"
         )
         col.findings.append(
             self._fact(
@@ -396,7 +430,7 @@ class NetworkAgent:
         )
         if rst:
             parts = [
-                f"{network_entity(labels).name} {v:.3g}건/초"
+                f"{network_entity(labels, flow=True).name} {v:.3g}건/초"
                 for labels, v in rst[: self._cfg.top_n]
             ]
             col.findings.append(
@@ -427,11 +461,15 @@ class NetworkAgent:
         for labels, value in rows:
             name = labels.get("source_namespace") or UNKNOWN_PEER
             by_source[name] = by_source.get(name, 0.0) + value
+        if total <= 0:
+            # 수집 범위 문제일 수 있으므로 "DNS 질의 없음"을 사실로 내세우지 않습니다.
+            col.limit(DNS_ZERO_NOTE)
+            return
         top = sorted(by_source.items(), key=lambda x: -x[1])[: self._cfg.top_n]
         col.findings.append(
             self._fact(
-                f"DNS 질의(현재, 5분): 전체 {total:.3g}건/초, 출발 네임스페이스별 "
-                + ", ".join(f"{n} {v:.3g}건/초" for n, v in top),
+                f"DNS 질의(현재, 5분){self._scope_suffix}: 전체 {total:.3g}건/초, "
+                "출발 네임스페이스별 " + ", ".join(f"{n} {v:.3g}건/초" for n, v in top),
                 result,
             )
         )

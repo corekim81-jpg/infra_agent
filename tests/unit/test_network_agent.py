@@ -8,6 +8,7 @@ from pathlib import Path
 from expr_prom import ExprProm
 from infra_agent.agents.network import (
     COUNT_NOTE,
+    DNS_ZERO_NOTE,
     DROP_REASON_NOTE,
     UNKNOWN_PEER,
     NetworkAgent,
@@ -147,12 +148,14 @@ def _fill(ctx: AnalysisContext, fake: ExprProm, *, lost: float = 0.0) -> None:
     )
 
 
-async def _run(ctx: AnalysisContext, fake: ExprProm) -> AgentResult:
+async def _run(
+    ctx: AnalysisContext, fake: ExprProm, analysis: AnalysisConfig | None = None
+) -> AgentResult:
     async with PrometheusClient.from_config(CFG, transport=fake.transport()) as prom:
         tool = CatalogQueryTool(
             CATALOG, prom, agent=AgentName.NETWORK, budget=ToolBudget(100), timeout_seconds=5
         )
-        return await NetworkAgent(tool, AnalysisConfig()).run(TASK, ctx, {})
+        return await NetworkAgent(tool, analysis or AnalysisConfig()).run(TASK, ctx, {})
 
 
 async def test_counts_ratios_and_context() -> None:
@@ -237,7 +240,43 @@ async def test_normal_flows_and_no_rst() -> None:
     assert "TCP RST 패킷(현재, 5분): 없음 (확인한 플래그: SYN)" in texts
 
 
+async def test_reason_only_drop_is_benign_and_dns_zero_is_limitation() -> None:
+    """live 형태: Prometheus는 빈 라벨을 빼므로 출발·도착을 모르는 드롭 행에는 reason만 남음."""
+    ctx = _ctx()
+    fake = ExprProm()
+    _fill(ctx, fake)
+    fake.add(
+        _expr("network.drops_increase", ctx),
+        [({"reason": "UNSUPPORTED_L3_PROTOCOL"}, 77.6), ({"reason": "POLICY_DENIED"}, 3.0)],
+    )
+    fake.add(_expr("network.dns_query_rate", ctx), [({"source_namespace": "otel-demo"}, 0.0)])
+    result = await _run(ctx, fake)
+    by = {f.statement: f for f in result.findings}
+    unknown = f"{UNKNOWN_PEER} → {UNKNOWN_PEER}"
+    denied = by[f"Hubble 패킷 드롭 (최근 30분): {unknown} 3회 (사유 POLICY_DENIED)"]
+    assert denied.severity is Severity.WARNING and denied.targets[0].kind is TargetKind.NAMESPACE
+    benign = by[
+        f"Hubble 패킷 드롭 (최근 30분): {unknown} 약 77.6회 (사유 UNSUPPORTED_L3_PROTOCOL, "
+        "비장애성 사유로 설정되어 정보로 표시)"
+    ]
+    assert benign.severity is Severity.INFO
+    # 경고 대상이 먼저 표시됨
+    order = [f.statement for f in result.findings if "Hubble 패킷 드롭" in f.statement]
+    assert order[0].endswith("(사유 POLICY_DENIED)")
+    assert any("analysis.benign_drop_reasons" in x for x in result.limitations)
+    assert not any("{" in f.statement for f in result.findings)
+    # DNS 0은 "질의 없음" 사실이 아니라 수집 범위 한계
+    assert not any(f.statement.startswith("DNS 질의") for f in result.findings)
+    assert DNS_ZERO_NOTE in result.limitations
+
+    strict = await _run(ctx, fake, AnalysisConfig(benign_drop_reasons=()))
+    l3 = [f for f in strict.findings if "UNSUPPORTED_L3_PROTOCOL" in f.statement]
+    assert [f.severity for f in l3] == [Severity.WARNING]
+
+
 def test_entity_names() -> None:
+    assert network_entity({"reason": "X"}).kind is TargetKind.HOST  # Hubble 항목이 아니면 흐름 아님
+    assert network_entity({"reason": "X"}, flow=True).name == f"{UNKNOWN_PEER} → {UNKNOWN_PEER}"
     world = network_entity({"source_namespace": "", "destination_namespace": "otel-demo"})
     assert world.name == f"{UNKNOWN_PEER} → otel-demo" and world.kind is TargetKind.NAMESPACE
     node = network_entity({"k8s_node_name": "k3d-a-0", "interface": "eth0", "direction": "receive"})

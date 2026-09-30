@@ -191,6 +191,9 @@ class AnalysisConfig(_Strict):
     # --- Network Agent (#27). 흐름이 min_request_rate보다 적은 네임스페이스 쌍은 판정하지 않음
     flow_drop_ratio_warning: float = Field(default=0.05, gt=0, le=1)
     """Hubble 흐름 중 DROPPED·ERROR 판정 비율 경고 기준."""
+    benign_drop_reasons: tuple[str, ...] = ("UNSUPPORTED_L3_PROTOCOL",)
+    """경고 대신 정보로 표시할 Hubble 드롭 사유(대소문자 무시). 기본값은 IPv4·IPv6가 아닌
+    L3 패킷(ARP 등)을 Cilium이 처리하지 않아 생기는 드롭으로, 일반적으로 장애가 아닙니다."""
 
     @model_validator(mode="after")
     def _order(self) -> Self:

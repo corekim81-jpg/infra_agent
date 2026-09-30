@@ -358,7 +358,9 @@ items:
     requires_metrics: [hubble_dns_queries_total]
     target_labels: *hubble_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-    caveats: [DNS 응답 코드(rcode) 라벨이 없어 DNS 오류율은 이 지표로 판단할 수 없음]
+    caveats:
+      - DNS 응답 코드(rcode) 라벨이 없어 DNS 오류율은 이 지표로 판단할 수 없음
+      - DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계됨. 0이어도 실제 질의가 없다는 뜻이 아닐 수 있음
   network.hubble_lost_events_increase:
     agent: network
     source: prometheus
