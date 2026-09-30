@@ -480,40 +480,53 @@ items:
   db.pool_utilization_accounting:
     agent: db
     source: prometheus
-    description: accounting(.NET Npgsql) 커넥션 풀 연결 수 / 최대 연결 수
+    description: accounting(.NET Npgsql) 커넥션 풀 사용 중 연결 수 / 최대 연결 수 (유휴 연결 제외)
     unit: ratio
     query: >-
-      sum by (service_name, db_client_connection_pool_name) (db_client_connection_count{{{selector}}})
+      (sum by (service_name, db_client_connection_pool_name) (db_client_connection_count{{db_client_connection_state!~"(?i)idle",{selector}}})
+      or 0 * sum by (service_name, db_client_connection_pool_name) (db_client_connection_count{{{selector}}}))
       / max by (service_name, db_client_connection_pool_name) (db_client_connection_max{{{selector}}})
     requires_metrics: [db_client_connection_count, db_client_connection_max]
     target_labels: &app_targets {namespace: k8s_namespace_name, pod: k8s_pod_name, service: service_name}
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats:
-      - "분자는 모든 상태(db_client_connection_state: idle·used 등)의 합계임. 사용 중 연결만 보려면 상태 값 검토 후 필터 추가"
+      - "상태 라벨(db_client_connection_state) 값이 idle(대소문자 무관)인 연결을 유휴로 가정하고 제외함. 상태 값 이름은 개발 서버 값 검토 전 가정"
+      - 사용 중 연결이 없으면 0으로 계산함(유휴 연결만 있는 풀)
   db.pool_utilization_product_catalog:
     agent: db
     source: prometheus
-    description: product-catalog(Go database/sql) 열린 연결 수 / 최대 열린 연결 수
+    description: product-catalog(Go database/sql) 사용 중 연결 수 / 최대 열린 연결 수 (유휴 연결 제외)
     unit: ratio
     query: >-
-      sum by (service_name) (db_sql_connection_open{{{selector}}})
+      (sum by (service_name) (db_sql_connection_open{{status!~"(?i)idle",{selector}}})
+      or 0 * sum by (service_name) (db_sql_connection_open{{{selector}}}))
       / max by (service_name) (db_sql_connection_max_open{{{selector}}})
     requires_metrics: [db_sql_connection_open, db_sql_connection_max_open]
     target_labels: *app_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats:
-      - 분자는 모든 status(유휴·사용 중) 합계임. 사용 중 연결만 보려면 status 값 검토 후 필터 추가
-      - max_open이 0이면 제한 없음을 뜻할 수 있어 비율이 무한대가 될 수 있음
-  db.pool_wait_rate:
+      - "status 라벨 값이 idle(대소문자 무관)인 연결을 유휴로 가정하고 제외함. 상태 값 이름은 개발 서버 값 검토 전 가정"
+      - max_open이 0이면 제한 없음을 뜻할 수 있어 비율이 무한대가 되며, 이 경우 결과에서 제외됨
+  db.pool_max_open_product_catalog:
     agent: db
     source: prometheus
-    description: product-catalog 커넥션 대기 발생 증가율
-    unit: waits/s
-    query: 'sum by (service_name) (rate(db_sql_connection_wait_total{{{selector}}}[{range}]))'
+    description: product-catalog(Go database/sql) 최대 열린 연결 수 설정 (0이면 제한 없음)
+    unit: connections
+    query: 'max by (service_name) (db_sql_connection_max_open{{{selector}}})'
+    requires_metrics: [db_sql_connection_max_open]
+    target_labels: *app_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [사용률 결과가 비었을 때 분모가 0(제한 없음)인지 구분하는 데 씀]
+  db.pool_waits_increase:
+    agent: db
+    source: prometheus
+    description: product-catalog 구간 내 커넥션 대기 발생 수 (풀에 남는 연결이 없어 기다린 횟수)
+    unit: count
+    query: 'sum by (service_name) (increase(db_sql_connection_wait_total{{{selector}}}[{range}]))'
     requires_metrics: [db_sql_connection_wait_total]
     target_labels: *app_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-    caveats: [대기 시간 합계는 db_sql_connection_wait_duration_milliseconds_total로 별도 확인 가능]
+    caveats: [increase()의 추정값임. 대기 시간 합계는 db_sql_connection_wait_duration_milliseconds_total로 별도 확인 가능]
   db.client_operation_latency_p95:
     agent: db
     source: prometheus
@@ -526,6 +539,20 @@ items:
     target_labels: *app_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats: [탐색 시 이 지표를 보낸 서비스는 product-catalog로 확인됨. 다른 서비스의 DB 지연은 spanmetrics로 확인]
+  db.span_latency_p95:
+    agent: db
+    source: prometheus
+    description: DB 호출 span 지연 p95 (spanmetrics, db_system_name이 있는 span, 서비스·span 이름별)
+    unit: seconds
+    query: >-
+      histogram_quantile(0.95, sum by (le, service, db_system_name, span_name)
+      (rate(traces_spanmetrics_latency_bucket{{db_system_name!="",{selector}}}[{range}])))
+    requires_metrics: [traces_spanmetrics_latency_bucket]
+    target_labels: {namespace: k8s_namespace_name, service: service}
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - service.db_span_latency_p95와 같은 조회식(에이전트별 허용 항목이 달라 따로 둠). 같은 요청에서 Service Agent가 조회했으면 DB Agent는 다시 조회하지 않음
+      - 트레이스에서 파생된 지표이므로 샘플링 설정에 따라 실제 호출 수와 다를 수 있음
 
   # ------------------------------------------------------------------ 캐시: Valkey (redis_* 지표)
   cache.valkey_clients:
@@ -548,18 +575,26 @@ items:
     requires_metrics: [redis_memory_used_bytes]
     target_labels: *valkey_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-  cache.valkey_evictions_rejections:
+  cache.valkey_evicted_increase:
     agent: db
     source: prometheus
-    description: Valkey 키 퇴출·연결 거부 증가율
-    unit: per second
-    query: >-
-      sum by (service_name) (rate(redis_keys_evicted_total{{{selector}}}[{range}]))
-      + sum by (service_name) (rate(redis_connections_rejected_total{{{selector}}}[{range}]))
-    requires_metrics: [redis_keys_evicted_total, redis_connections_rejected_total]
+    description: 구간 내 Valkey 키 퇴출 수 (메모리 한도로 밀려난 키)
+    unit: count
+    query: 'sum by (service_name) (increase(redis_keys_evicted_total{{{selector}}}[{range}]))'
+    requires_metrics: [redis_keys_evicted_total]
     target_labels: *valkey_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-    caveats: [두 지표의 합이므로 0보다 크면 각각을 따로 조회해 원인을 구분해야 함]
+    caveats: [increase()의 추정값임]
+  cache.valkey_rejected_increase:
+    agent: db
+    source: prometheus
+    description: 구간 내 Valkey 연결 거부 수 (최대 클라이언트 수 초과 등)
+    unit: count
+    query: 'sum by (service_name) (increase(redis_connections_rejected_total{{{selector}}}[{range}]))'
+    requires_metrics: [redis_connections_rejected_total]
+    target_labels: *valkey_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [increase()의 추정값임]
   cache.valkey_hit_ratio:
     agent: db
     source: prometheus
@@ -625,7 +660,7 @@ items:
     requires_metrics: [traces_spanmetrics_latency_bucket]
     target_labels: *spanmetrics_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
-    caveats: [DB Agent와 Service Agent가 함께 참고하는 항목. 단위 가정은 service.latency_p95와 같음]
+    caveats: [DB Agent는 같은 조회식의 db.span_latency_p95를 씀. 단위 가정은 service.latency_p95와 같음]
   service.dependency_request_rate:
     agent: service
     source: prometheus

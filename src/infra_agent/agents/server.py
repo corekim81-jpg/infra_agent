@@ -315,7 +315,7 @@ class ServerAgent:
             )
         if increases:
             col.next_checks.append(
-                "증가한 대상의 요청량·오류·로그를 확인해 원인 후보 좁히기 (Service Agent, 미구현)"
+                "증가한 대상의 요청량·오류·로그를 확인해 원인 후보 좁히기 (Service Agent)"
             )
         elif compared and self._is_fresh(current):
             col.findings.append(

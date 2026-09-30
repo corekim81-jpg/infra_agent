@@ -146,6 +146,9 @@
 - 대상: `otel-demo` 네임스페이스의 PostgreSQL 17.6, Valkey 9.0.1(`redis_*`로 수집).
 - PostgreSQL 직접 SQL 접속은 초기 필수 조건이 아닙니다.
 - 확인되지 않은 항목: MySQL, `pg_stat_statements`, 쿼리 실행 계획, 잠금 대기·잠금 그래프. 이 항목이 필요한 질문에는 한계와 필요한 수집 설정을 답변에 포함합니다.
+- **DB Agent live 결과(#25, 2026-09-30):** DB 질문·Service→DB 질문 live 2건 통과. PostgreSQL 연결 사용률 5~7%, 데드락·Valkey 퇴출·거부 0, 롤백 비율 0%, 버퍼 캐시 적중률 100%, accounting 풀 사용 중 연결 0%(상태 라벨로 유휴 연결이 구분되는 것으로 보임).
+  - product-catalog `db_client_operation_duration_seconds` p95가 작업 종류와 관계없이 모두 4.75초였고 직전 구간과도 같았습니다. 같은 작업의 spanmetrics DB 호출 지연은 약 0.002초입니다. 4.75초는 0~5초 첫 구간 안을 직선 보간한 값(5초×0.95)과 같아, 히스토그램이 OTel 기본 경계(0, 5, 10, …, 밀리초용)를 초 단위 값에 쓰는 것으로 추정합니다. DB Agent는 이런 값을 판정하지 않고 한계와 버킷 설정 제안으로 답합니다. 1차 수정 후 live에서도 여전히 경고가 나와, 전체 시계열의 경계를 합치면 다른 서비스의 좁은 경계에 가려지는 것으로 보고 서비스별 경계로 판단하도록 바꿨습니다live에서 서비스별 경계를 확인했습니다(`test_db_latency_bucket_bounds`): product-catalog는 0, 5, 10, 25, … 10000(OTel 기본 경계, 15개), accounting은 0.001, 0.005, 0.01, … 10초(9개)였고, spanmetrics는 서비스 모두 0.002~16.384초(14개)입니다. 수정 후 4.75초는 경고 대신 한계로 표시됩니다.
+  - product-catalog 커넥션 풀 사용률은 결과가 없었습니다(지표 최신성은 확인됨). 분모를 따로 조회해 최대 열린 연결 수가 0(제한 없음)임을 live에서 확인했습니다.
 
 ## 4. 조회 카탈로그
 
@@ -217,7 +220,8 @@ $env:INFRA_AGENT_LIVE_TESTS = "1"; python -m pytest -m live
 
 ### 4.4 otel-demo 카탈로그와 점검
 
-> **구현됨 (#9):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 53개(Server 13, Kubernetes 11, Network 8, DB·캐시 14, Service 7). `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지 51개는 `discovered`입니다.
+> **구현됨 (#9, DB 항목 보완 #25):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 56개(Server 13, Kubernetes 11, Network 8, DB·캐시 17, Service 7)와 Loki 항목 3개. `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지는 `discovered`입니다.
+> #25에서 DB Agent용으로 바꾼 항목: 커넥션 풀 사용률 2개를 사용 중 연결 기준(상태 값 idle 제외)으로 변경, `db.pool_wait_rate`·`cache.valkey_evictions_rejections`를 구간 증가 수 항목(`db.pool_waits_increase`, `cache.valkey_evicted_increase`, `cache.valkey_rejected_increase`)으로 교체, `db.span_latency_p95` 추가(Service 항목과 같은 조회식), 풀 사용률 분모 확인용 `db.pool_max_open_product_catalog` 추가.
 
 - 항목마다 `target_labels`(대상 종류 → 라벨 이름)를 두어, 에이전트가 대상(네임스페이스·Pod·서비스 등)을 selector로 바꿀 때 사용합니다. 항목이 지원하지 않는 대상은 `selector_for()`가 따로 반환하므로 답변의 한계로 표시해야 합니다.
 - 점검 명령:
@@ -228,7 +232,7 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 ```
 
   "결과 없음"은 오류가 아닙니다(예: 재시작이 없으면 `k8s.container_restarts_increase`는 비어 있음). "지표 없음"과 "오류"가 있으면 종료 코드 1을 반환합니다.
-- 조회식 문법은 로컬 Prometheus 3.5(빈 데이터)에서 53개 항목 × selector 유무 106건을 실행해 오류가 없음을 확인했습니다.
+- 조회식 문법은 로컬 Prometheus 3.5(빈 데이터)에서 확인했습니다: #9에서 53개 항목 × selector 유무 106건, #25에서 55개 항목 × selector 유무 × 구간(5m·1800s) 166건 모두 오류 없음.
 - **개발 서버 실행 점검(2026-09-29):** 정상 43, 결과 없음 10, 지표 없음 0, 오류 0.
   - 결과 없음 10건은 모두 "문제가 있을 때만 결과가 나오는" 조건형 조회입니다(`k8s.container_restarts_increase`, `k8s.container_oom_events`, `k8s.pod_phase`, `k8s.node_not_ready`, `k8s.node_pressure`, `k8s.deployment_unavailable`, `k8s.statefulset_unready`, `k8s.daemonset_unready`, `k8s.job_failed_pods`, `k8s.hpa_at_max`).
   - `network.tcp_flags_rate`가 워크로드 단위 집계에서 시계열 1.4만 개를 반환해 네임스페이스 단위로 줄였습니다.

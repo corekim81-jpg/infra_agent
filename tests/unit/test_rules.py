@@ -61,9 +61,33 @@ def test_overrides_win() -> None:
 def test_unsupported_domains_reported() -> None:
     r = interpret("서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘", NOW, D30)
     assert {"service", "network", "db"} <= r.domains
-    assert r.unsupported_domains == {"network", "db"}  # Service는 구현됨(#23)
+    assert r.unsupported_domains == {"network"}  # Service(#23)·DB(#25)는 구현됨
+    assert r.intent is Intent.ANOMALY  # "느려진" → 직전 구간 대비 비교
     r2 = interpret("오류가 증가한 시간대의 로그와 트레이스를 연결해서 원인 후보를 알려줘", NOW, D30)
     assert r2.domains == {"service"} and r2.intent is Intent.ANOMALY
+
+
+def test_db_questions_do_not_pull_in_service() -> None:
+    r = interpret("DB 커넥션 풀이 부족하거나 쿼리가 느려진 징후가 있어?", NOW, D30)
+    assert r.domains == {"db"}  # "느려진"만으로는 서비스 분석을 붙이지 않음
+    assert r.intent is Intent.ANOMALY and not r.unsupported_domains
+    assert interpret("valkey 캐시 상태는?", NOW, D30).domains == {"db"}
+    both = interpret("서비스 응답 지연이 DB 때문이야?", NOW, D30)
+    assert both.domains == {"service", "db"}  # 서비스 키워드가 있으면 함께
+    # DB 내부 단어 없이 "느린 이유가 DB인지"는 서비스 지연 질문이므로 서비스와 DB 모두
+    assert interpret("checkout 느린 이유가 DB야?", NOW, D30).domains == {"service", "db"}
+    assert interpret("checkout 지연이 캐시 때문인지", NOW, D30).domains == {"service", "db"}
+
+
+def test_keywords_do_not_match_inside_other_words() -> None:
+    # "block"의 lock, "catalog"의 log는 키워드가 아님 (영문 키워드는 앞 경계 확인)
+    assert interpret("block I/O가 높은 노드", NOW, D30).domains == {"server"}
+    assert interpret("catalog 서비스 상태", NOW, D30).domains == {"service"}
+    # 쿠버네티스 롤백, 노드 풀, 노드 메모리 캐시는 DB 질문이 아님
+    assert interpret("Deployment 롤백 이후 재시작한 Pod 있어?", NOW, D30).domains == {"kubernetes"}
+    assert interpret("node pool 노드 상태 알려줘", NOW, D30).domains == {"server"}
+    assert interpret("노드 메모리 캐시 사용량이 높아?", NOW, D30).domains == {"server"}
+    assert interpret("DB 잠금이나 데드락 있어?", NOW, D30).domains == {"db"}
 
 
 def test_kubernetes_questions_do_not_pull_in_server() -> None:

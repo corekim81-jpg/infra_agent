@@ -53,10 +53,14 @@ def _severity_counts(findings: Sequence[Finding]) -> str:
     return f"{critical + warning}건({', '.join(parts)})"
 
 
+COMPARING_AGENTS = (AgentName.SERVER, AgentName.SERVICE, AgentName.DB)
+"""직전 구간 대비 증가를 판정하는 에이전트."""
+
+
 def _compares(interp: Interpretation, results: Sequence[AgentResult]) -> bool:
-    """직전 구간 비교 결과를 먼저 답할지. 비교는 Server·Service Agent가 수행합니다."""
+    """직전 구간 비교 결과를 먼저 답할지. 비교는 Server·Service·DB Agent가 수행합니다."""
     return interp.intent in (Intent.COMPARE, Intent.ANOMALY) and any(
-        r.agent in (AgentName.SERVER, AgentName.SERVICE) for r in results
+        r.agent in COMPARING_AGENTS for r in results
     )
 
 

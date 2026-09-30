@@ -183,6 +183,11 @@ class AnalysisConfig(_Strict):
     """오류율 최고 시점 전후로 로그·트레이스를 볼 구간 길이."""
     log_sample_limit: int = Field(default=3, ge=0, le=20)
     trace_sample_limit: int = Field(default=3, ge=0, le=20)
+    # --- DB Agent (#25). 연결·풀 사용률은 utilization_*, DB 지연은 latency_p95_warning_seconds 사용
+    rollback_ratio_warning: float = Field(default=0.05, gt=0, le=1)
+    """PostgreSQL 롤백 비율(rollbacks / (commits + rollbacks)) 경고 기준."""
+    cache_hit_ratio_warning: float = Field(default=0.9, gt=0, le=1)
+    """PostgreSQL 버퍼 캐시 적중률이 이 값보다 낮으면 경고."""
 
     @model_validator(mode="after")
     def _order(self) -> Self:

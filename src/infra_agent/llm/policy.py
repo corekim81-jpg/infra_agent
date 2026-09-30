@@ -36,6 +36,9 @@ TARGET_LABELS = frozenset(
         "service_name",
         "service",
         "postgresql_database_name",
+        "db_operation_name",
+        "db_system_name",
+        "span_name",
     }
 )
 MAX_ROWS = 20
