@@ -60,6 +60,7 @@ from infra_agent.tools import (
     QueryMode,
     QueryOutcome,
     TraceSearchTool,
+    is_service_name,
     rows_of,
     value_rows,
 )
@@ -70,6 +71,8 @@ SCOPE_NOTE = (
     "트레이스 샘플링에 따라 실제 요청 수와 다를 수 있습니다. "
     "오류 로그는 본문 키워드(단어 단위) 기준이며, 레벨이 INFO 이하로 표시된 줄은 제외합니다."
 )
+UNKNOWN_ROOT = "(루트 span 미수신)"
+"""오류 트레이스의 루트 서비스를 알 수 없을 때 개요에 쓰는 이름 (상세 대상에서 제외)."""
 LOG_WORDS = ("로그", "log", "트레이스", "trace", "추적", "원인")
 """질문에 이 단어가 있으면 오류 서비스가 없어도 로그·트레이스 개요를 조회합니다."""
 TRACE_LINK_SEARCH_LIMIT = 20
@@ -127,6 +130,8 @@ class _Focus:
     service: str
     ratio: float
     reason: str
+    client_side: bool = False
+    """호출한 쪽(client)으로 상세 확인하는지. 이때는 오류율 최고 시점을 CLIENT span에서 찾습니다."""
 
 
 @dataclass
@@ -656,9 +661,16 @@ class ServiceAgent:
                     basis=JudgementBasis.THRESHOLD,
                 )
             )
-            # 실패를 응답한 쪽(server)이 트레이스 지표가 있는 서비스면 로그·트레이스 상세 대상
-            if server in state.traced and server not in state.focus:
-                state.focus[server] = _Focus(server, ratio, f"{client} → {server} 호출 실패")
+            # 실패를 응답한 쪽(server)이 트레이스 지표가 있는 서비스면 그 서비스를, 아니면
+            # (DB·외부 시스템처럼 계측되지 않은 대상) 호출한 쪽(client)을 상세 대상으로
+            reason = f"{client} → {server} 호출 실패"
+            if server in state.traced:
+                if server not in state.focus:
+                    state.focus[server] = _Focus(server, ratio, reason)
+            elif client in state.traced and client not in state.focus:
+                state.focus[client] = _Focus(
+                    client, ratio, f"{reason}, 호출한 쪽", client_side=True
+                )
         if exceeded or not (is_fresh(total, self._cfg) and is_fresh(failed, self._cfg)):
             return
         worst = max(ratios.items(), key=lambda kv: kv[1])
@@ -736,14 +748,17 @@ class ServiceAgent:
         if result is None:
             return ctx.time_range
         rows = [r for r in rows_of(result) if isinstance(r.get("value"), int | float)]
-        server = [r for r in rows if "SERVER" in str(r.get("labels", {})).upper()] or rows
-        if not server:
+        kind = "CLIENT" if focus.client_side else "SERVER"
+        preferred = [r for r in rows if kind in str(r.get("labels", {})).upper()]
+        candidates = preferred or rows
+        if not candidates:
             col.limit(f"{focus.service}: 오류율 시계열이 없어 분석 구간 전체로 로그·트레이스를 봄")
             return ctx.time_range
-        peak = max(server, key=lambda r: float(r["value"]))  # type: ignore[arg-type]
+        peak = max(candidates, key=lambda r: float(r["value"]))  # type: ignore[arg-type]
         if float(peak["value"]) <= 0:  # type: ignore[arg-type]
+            which = f"{kind} span " if preferred else ""
             col.limit(
-                f"{focus.service}: 분석 구간에 SERVER span 오류율이 0보다 큰 시점이 없어 "
+                f"{focus.service}: 분석 구간에 {which}오류율이 0보다 큰 시점이 없어 "
                 "구간 전체로 로그·트레이스를 봄"
             )
             return ctx.time_range
@@ -1032,7 +1047,9 @@ class ServiceAgent:
         rows = rows_of(result)
         by_root: dict[str, int] = {}
         for r in rows:
-            name = str(r.get("root_service") or "?")
+            root = r.get("root_service")
+            # Tempo는 루트 span이 아직 없으면 "<root span not yet received>" 같은 표시를 줌
+            name = str(root) if root and is_service_name(str(root)) else UNKNOWN_ROOT
             by_root[name] = by_root.get(name, 0) + 1
         ranked = sorted(by_root.items(), key=lambda x: -x[1])
         text = ", ".join(f"{n} {c}건" for n, c in ranked) if rows else "검색 결과 없음"
@@ -1046,4 +1063,4 @@ class ServiceAgent:
                 basis=JudgementBasis.STATE,
             )
         )
-        return [name for name, _ in ranked if name != "?"]
+        return [name for name, _ in ranked if name != UNKNOWN_ROOT]

@@ -411,6 +411,8 @@ async def test_overview_falls_back_to_error_trace_roots() -> None:
         {"traceID": TRACE_B, "rootServiceName": "cart"},
         # 현재 5분 지표에는 없는 서비스도 트레이스에 나타났으면 서비스로 인정
         {"traceID": "22" * 16, "rootServiceName": "load-generator"},
+        # 루트 span을 아직 받지 못한 트레이스 (Tempo 표시 문자열) → 서비스가 아님
+        {"traceID": "33" * 16, "rootServiceName": "<root span not yet received>"},
     ]
     fake.tempo[build_traceql("cart", errors=True)] = [{"traceID": TRACE_A}]
     result = await _run(ctx, fake)
@@ -422,6 +424,13 @@ async def test_overview_falls_back_to_error_trace_roots() -> None:
     )
     assert any(q == build_traceql("load-generator", errors=True) for _, q in fake.calls)
     assert not any("로그 출처는 서비스 상세 확인에서 제외" in x for x in result.limitations)
+    overview = next(
+        f.statement
+        for f in result.findings
+        if f.statement.startswith("오류 트레이스 (") and "루트 서비스별" in f.statement
+    )
+    assert "(루트 span 미수신) 1건" in overview and "not yet received" not in overview
+    assert not any("형식이 올바르지 않습니다" in x for x in result.limitations)
     # 후보가 전혀 없으면 연결하지 않은 이유를 한계에 적음
     fake.tempo[build_traceql(None, errors=True)] = []
     empty = await _run(ctx, fake)
@@ -529,6 +538,54 @@ async def test_histogram_saturation_is_reported_as_lower_bound() -> None:
     ) in texts
     assert "서비스 간 호출 지연 p95(서버 측)(현재): cart → redis 2초 (기준 1초 이상)" in texts
     assert any("최대 유한 구간 경계(12.8초)와 같은 대상 1개" in x for x in result.limitations)
+
+
+async def test_failing_call_to_untraced_server_focuses_on_client() -> None:
+    """DB처럼 계측되지 않은 대상으로의 호출 실패는 호출한 쪽(client) 서비스로 상세 확인."""
+    ctx = _ctx()
+    fake = FakeBackend()
+    _red(ctx, fake, cart_error=0.0)
+    fake.responses[(_expr("service.request_rate", ctx), None)].append(
+        ({"service": "accounting", "span_kind": "SPAN_KIND_CONSUMER", "status_code": "x"}, 0.2)
+    )
+    fake.add(
+        _expr("service.dependency_request_rate", ctx),
+        [({"client": "accounting", "server": "postgresql", "connection_type": "database"}, 0.06)],
+    )
+    fake.add(
+        _expr("service.dependency_failed_rate", ctx),
+        [({"client": "accounting", "server": "postgresql"}, 0.0039)],
+    )
+    fake.add_range(
+        _expr("service.error_ratio", ctx, sel='service="accounting"'),
+        [
+            # 호출한 쪽 상세이므로 CLIENT span의 최고 시점을 씀 (CONSUMER의 더 큰 값은 무시)
+            (
+                {"service": "accounting", "span_kind": "SPAN_KIND_CLIENT"},
+                [(NOW - timedelta(minutes=20), 0.01), (PEAK, 0.3), (NOW, 0.06)],
+            ),
+            (
+                {"service": "accounting", "span_kind": "SPAN_KIND_CONSUMER"},
+                [(NOW - timedelta(minutes=25), 0.9)],
+            ),
+        ],
+    )
+    sel = 'service_name="accounting"'
+    fake.loki_metrics[_loki("log.lines_total", FOCUS, sel)] = [({"service_name": "accounting"}, 40)]
+    fake.loki_metrics[_loki("log.error_lines", FOCUS, sel)] = [({"service_name": "accounting"}, 0)]
+    fake.tempo[build_traceql("accounting", errors=True)] = [
+        {"traceID": TRACE_A, "rootServiceName": "accounting", "rootTraceName": "order-consumed"}
+    ]
+    result = await _run(ctx, fake)
+    texts = [f.statement for f in result.findings]
+    assert any(
+        t.startswith("서비스 간 호출 실패율(현재): accounting → postgresql 6.5%") for t in texts
+    )
+    peak = next(t for t in texts if t.startswith("오류율 최고 시점 (accounting"))
+    assert "accounting → postgresql 호출 실패, 호출한 쪽" in peak and "30.0%" in peak
+    assert any(t.startswith("오류 트레이스 (accounting, ") for t in texts)
+    assert any(q == build_traceql("accounting", errors=True) for _, q in fake.calls)
+    assert not any(q == build_traceql("postgresql", errors=True) for _, q in fake.calls)
 
 
 async def test_failing_call_path_focuses_on_server_side() -> None:

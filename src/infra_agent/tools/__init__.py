@@ -13,7 +13,7 @@ from infra_agent.tools.log_query import (
     normalize_trace_id,
     trace_id_of,
 )
-from infra_agent.tools.trace_search import TraceSearchTool, build_traceql
+from infra_agent.tools.trace_search import TraceSearchTool, build_traceql, is_service_name
 
 __all__ = [
     "CatalogQueryTool",
@@ -25,6 +25,7 @@ __all__ = [
     "TraceSearchTool",
     "build_traceql",
     "clean_text",
+    "is_service_name",
     "normalize_trace_id",
     "rows_of",
     "trace_id_of",

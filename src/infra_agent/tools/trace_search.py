@@ -23,12 +23,20 @@ SERVICE_ATTR = "resource.service.name"
 _SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
+def is_service_name(name: str) -> bool:
+    """TraceQL에 넣을 수 있는 서비스 이름 형식인지.
+
+    Tempo가 루트 span 대신 주는 "<root span not yet received>" 같은 표시는 서비스가 아닙니다.
+    """
+    return bool(_SERVICE_NAME_RE.match(name))
+
+
 def build_traceql(
     service: str | None, *, errors: bool = False, min_duration_ms: int | None = None
 ) -> str:
     conditions = []
     if service is not None:
-        if not _SERVICE_NAME_RE.match(service):
+        if not is_service_name(service):
             raise ValueError(f"서비스 이름 형식이 올바르지 않습니다: {service!r}")
         conditions.append(f'{SERVICE_ATTR} = "{service}"')
     if errors:
