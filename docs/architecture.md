@@ -1,6 +1,6 @@
 # 아키텍처 설계
 
-> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15), 실행 계획·실행기(4·8절, #19)가 구현되었습니다. Server 외 분야 에이전트는 아직 구현되지 않았습니다.
+> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15), 실행 계획·실행기(4·8절, #19), Kubernetes Agent(3절, #21)가 구현되었습니다. Network·DB·Service 에이전트는 아직 구현되지 않았습니다.
 > 구현이 진행되면 각 절에 구현 상태를 표시하고, 설계와 달라진 부분을 이 문서에 반영합니다.
 > 기능 범위의 기준은 [README.md](../README.md)입니다.
 
@@ -73,6 +73,15 @@ flowchart TD
 - 비교·증가: 노드·Pod CPU·메모리의 분석 구간 평균을 같은 길이 직전 구간 평균과 비교(`increase_ratio`와 최소 증가량을 모두 넘을 때 증가로 판정)
 - 빈 결과는 한계로, 최신성을 확인하지 못했거나 오래된 데이터로는 "기준 미만"이라고 판정하지 않음. 요청 대상으로 필터링할 수 없는 항목은 조회하지 않고 한계로 표시
 - 카탈로그 조회 도구(`tools/catalog_query.py`)가 agent=server 항목만 실행하도록 강제
+
+**Kubernetes Agent 구현 (#21):** `agents/kubernetes.py`, 지침 `agents/prompts.py`(`KUBERNETES_SYSTEM_PROMPT`) — Kubernetes API 연동 전이므로 Prometheus의 k8s_cluster·cAdvisor 지표로 판정
+- 현재 상태: 노드 NotReady(심각)·압박, Pod phase가 Running·Succeeded가 아닌 Pod(Failed 심각, Pending·Unknown 경고), not ready 컨테이너(완료된 Pod 제외), Deployment·StatefulSet·DaemonSet 복제 부족, 실패 Pod가 있는 Job, 최대 복제에 도달한 HPA
+- 분석 구간: 컨테이너 재시작 증가(경고), OOM 이벤트(심각). 분석 구간 전체의 증가량(`window` 조회)으로 판정하며, 상태 질문은 기본 구간(`execution.default_time_range`)을 씀
+- **조건 조회의 빈 결과:** 문제 대상만 결과로 나오는 조회이므로, 조회 성공 + 기준 지표가 최신 + (대상 필터가 있으면) 그 대상의 기준 지표 시계열 존재(`CatalogQueryTool.coverage`)를 모두 확인한 경우에만 "해당 대상 없음"으로 판정합니다. 하나라도 확인하지 못하면 한계로 표시합니다.
+- 재시작과 OOM 이벤트가 같은 컨테이너에서 함께 확인되어도 종료 사유를 조회하지 않았으므로 인과를 단정하지 않고 추가 확인으로 제안합니다. Pending 사유·종료 사유·이벤트는 Kubernetes API 연동(8b) 후 확인합니다.
+- Pod phase 값(1=Pending … 5=Unknown)은 OTel k8s_cluster 수신기 정의를 따른 가정이며 답변 한계에 표시합니다.
+- Server Agent가 제안한 "limit 근접 컨테이너의 OOM·재시작 확인"은 같은 요청에서 Kubernetes Agent가 성공하면 종합 단계에서 뺍니다.
+- 질문 해석: "Pod·컨테이너·노드"만으로는 서버 자원 분야로 보지 않고, Kubernetes 키워드가 있으면 Kubernetes만 실행합니다(자원 키워드가 함께 있으면 Server ∥ Kubernetes).
 
 범위 제한:
 

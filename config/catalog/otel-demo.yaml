@@ -195,12 +195,17 @@ items:
   k8s.container_not_ready:
     agent: kubernetes
     source: prometheus
-    description: 준비되지 않은 컨테이너 (k8s_container_ready == 0)
+    description: 준비되지 않은 컨테이너 (k8s_container_ready == 0, 완료된 Pod 제외)
     unit: state
-    query: 'k8s_container_ready{{{selector}}} == 0'
+    query: >-
+      k8s_container_ready{{{selector}}} == 0
+      unless on (k8s_namespace_name, k8s_pod_name) (k8s_pod_phase == 3)
     requires_metrics: [k8s_container_ready]
     target_labels: *state_container_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats:
+      - "완료된 Job의 컨테이너는 ready=0이므로 Pod phase 3(Succeeded)을 제외함 (phase 값 의미는 k8s.pod_phase caveats 참고)"
+      - 두 지표의 namespace·pod 라벨이 일치해야 제외가 적용되며, 일치하지 않으면 제외 없이 조회됨
   k8s.pod_phase:
     agent: kubernetes
     source: prometheus

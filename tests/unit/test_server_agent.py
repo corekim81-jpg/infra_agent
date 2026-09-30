@@ -222,6 +222,7 @@ async def test_answer_question_end_to_end() -> None:
     assert bundle.plan is not None and [t.task_id for t in bundle.plan.tasks] == ["server-1"]
     assert [(r.task_id, r.status) for r in bundle.runs] == [("server-1", AgentStatus.SUCCESS)]
     assert "(에이전트 실행: server 성공 " in text
+    assert "구간 집계 항목" not in text  # 서버 상태 질문에는 구간 집계 항목이 없음
 
     other = await answer_question(
         "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘",

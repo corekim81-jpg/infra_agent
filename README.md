@@ -158,7 +158,7 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 
 ## 설치 및 실행
 
-> 현재는 초기 구현 단계입니다. 질문 응답은 **Server Agent(k3d 노드·Pod·컨테이너 자원)만** 지원합니다. 네트워크·DB·서비스·Kubernetes 상태 질문에는 "아직 분석하지 않음"으로 답합니다.
+> 현재는 초기 구현 단계입니다. 질문 응답은 **Server Agent(k3d 노드·Pod·컨테이너 자원)와 Kubernetes Agent(노드 조건, Pod phase, 재시작·OOM, 워크로드 복제 상태; Prometheus 지표 기준)** 를 지원하며, 두 분야를 함께 묻으면 병렬로 실행합니다. 네트워크·DB·서비스 질문에는 "아직 분석하지 않음"으로 답합니다. Pending 사유·종료 사유·Kubernetes 이벤트는 아직 확인하지 않습니다.
 > 답변 끝에 실행한 에이전트와 결과(성공·실패·실행 안 함, 소요 시간)를 표시합니다.
 > 수치 판정은 항상 코드가 합니다. 모델(Claude Agent SDK, 선택)을 설정하면 질문 해석과 원인 후보(추정) 제안에 사용하며, 모델은 도구를 쓸 수 없습니다. 모델이 없거나 실패하면 규칙 기반으로 답합니다.
 
@@ -185,9 +185,10 @@ infra-agent discover --config config/local.yaml
 # 조회 카탈로그 검증 / 각 조회를 Prometheus에 실행해 점검
 infra-agent catalog --config config/local.yaml --execute
 
-# 질문 응답 (Server Agent). llm.provider가 claude_agent_sdk면 모델 사용, --no-llm이면 모델 없이
+# 질문 응답 (Server·Kubernetes Agent). llm.provider가 claude_agent_sdk면 모델 사용, --no-llm이면 모델 없이
 infra-agent ask --config config/local.yaml "현재 서버 상태가 어때?"
 infra-agent ask --config config/local.yaml "최근 30분 동안 CPU나 메모리가 비정상적으로 증가한 서버가 있어?"
+infra-agent ask --config config/local.yaml "Kubernetes에서 재시작하거나 Pending 상태인 Pod를 확인해 줘"
 #   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --json  --no-llm
 #         --show-queries (조회식과, 검증에 실패해 제외된 모델 원인 후보를 진단용으로 표시)
 
@@ -199,7 +200,8 @@ python -m pytest -m "not live"
 
 이후 단계에서 다음 항목을 추가합니다.
 
-- Kubernetes·Network·DB·Service 에이전트 (실행 계획과 제한된 병렬 실행기는 구현되어 있어, 에이전트를 추가하면 함께 실행됨)
+- Network·DB·Service 에이전트 (실행 계획과 제한된 병렬 실행기는 구현되어 있어, 에이전트를 추가하면 함께 실행됨)
+- Kubernetes API 읽기 계정 연동 (Pending 사유, 종료 사유, 이벤트)
 - 컨테이너 실행 및 Kubernetes 배포 방법
 
 ## 테스트 및 품질 평가

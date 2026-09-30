@@ -164,7 +164,7 @@ class AnalysisConfig(_Strict):
     """최신 샘플이 이 시간보다 오래되면 데이터 지연으로 표시."""
     top_n: int = Field(default=5, ge=1, le=50)
     """답변에 표시할 대상 수 상한."""
-    max_tool_calls: int = Field(default=60, ge=1, le=1000)
+    max_tool_calls: int = Field(default=100, ge=1, le=1000)
     """요청당 도구(조회) 호출 상한."""
 
     @model_validator(mode="after")

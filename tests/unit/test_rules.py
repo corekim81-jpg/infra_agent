@@ -62,9 +62,16 @@ def test_unsupported_domains_reported() -> None:
     r = interpret("서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘", NOW, D30)
     assert {"service", "network", "db"} <= r.domains
     assert r.unsupported_domains == r.domains
-    r2 = interpret("재시작하거나 Pending 상태인 Pod를 확인해 줘", NOW, D30)
-    assert "kubernetes" in r2.unsupported_domains
-    assert "server" in r2.domains  # "pod" 키워드
+
+
+def test_kubernetes_questions_do_not_pull_in_server() -> None:
+    r = interpret("Kubernetes에서 재시작하거나 Pending 상태인 Pod를 확인해 줘", NOW, D30)
+    assert r.domains == {"kubernetes"}  # "pod"만으로는 서버 자원 분석을 붙이지 않음
+    assert r.unsupported_domains == frozenset()
+    assert interpret("노드 NotReady 있어?", NOW, D30).domains == {"kubernetes"}
+    both = interpret("메모리 많이 쓰는 Pod가 재시작했어?", NOW, D30)
+    assert both.domains == {"server", "kubernetes"}  # 자원 키워드(메모리)가 있으면 함께
+    assert interpret("현재 서버 상태가 어때?", NOW, D30).domains == {"server"}
 
 
 def test_range_clamped_to_retention() -> None:

@@ -18,7 +18,8 @@ import httpx
 
 from infra_agent.agents.base import Agent
 from infra_agent.agents.explain import AgentExplainer
-from infra_agent.agents.prompts import SERVER_SYSTEM_PROMPT
+from infra_agent.agents.kubernetes import KubernetesAgent
+from infra_agent.agents.prompts import KUBERNETES_SYSTEM_PROMPT, SERVER_SYSTEM_PROMPT
 from infra_agent.agents.server import ServerAgent
 from infra_agent.answer.synthesis import synthesize
 from infra_agent.catalog import Catalog
@@ -68,29 +69,48 @@ class AgentDeps:
     llm: BudgetedLLM | None
 
 
-def _build_server(deps: AgentDeps) -> Agent:
+def _explainer(deps: AgentDeps, agent: AgentName, prompt: str) -> AgentExplainer | None:
+    """에이전트별 지침으로 모델 해석기를 만듭니다. 조회 데이터를 보낼 수 없는 정책이면 None."""
     policy = deps.settings.llm.data_policy
-    explainer = (
-        AgentExplainer(
-            deps.llm, purpose="explain_server", system_prompt=SERVER_SYSTEM_PROMPT, policy=policy
-        )
-        if deps.llm is not None and allows_observations(policy)
-        else None
+    if deps.llm is None or not allows_observations(policy):
+        return None
+    return AgentExplainer(
+        deps.llm, purpose=f"explain_{agent.value}", system_prompt=prompt, policy=policy
     )
-    tool = CatalogQueryTool(
+
+
+def _tool(deps: AgentDeps, agent: AgentName) -> CatalogQueryTool:
+    """에이전트 전용 조회 도구 (자기 분야 카탈로그 항목만 실행 가능, 조회 예산은 공유)."""
+    return CatalogQueryTool(
         deps.catalog,
         deps.prometheus,
-        agent=AgentName.SERVER,
+        agent=agent,
         budget=deps.tool_budget,
         timeout_seconds=deps.settings.execution.tool_timeout_seconds,
     )
-    return ServerAgent(tool, deps.settings.analysis, explainer)
+
+
+def _build_server(deps: AgentDeps) -> Agent:
+    return ServerAgent(
+        _tool(deps, AgentName.SERVER),
+        deps.settings.analysis,
+        _explainer(deps, AgentName.SERVER, SERVER_SYSTEM_PROMPT),
+    )
+
+
+def _build_kubernetes(deps: AgentDeps) -> Agent:
+    return KubernetesAgent(
+        _tool(deps, AgentName.KUBERNETES),
+        deps.settings.analysis,
+        _explainer(deps, AgentName.KUBERNETES, KUBERNETES_SYSTEM_PROMPT),
+    )
 
 
 AGENT_BUILDERS: Mapping[AgentName, Callable[[AgentDeps], Agent]] = {
     AgentName.SERVER: _build_server,
+    AgentName.KUBERNETES: _build_kubernetes,
 }
-"""구현된 에이전트. 8단계 이후 Kubernetes·Service·DB·Network 에이전트를 여기에 추가합니다."""
+"""구현된 에이전트. 이후 Service·DB·Network 에이전트를 여기에 추가합니다."""
 
 
 def build_context(

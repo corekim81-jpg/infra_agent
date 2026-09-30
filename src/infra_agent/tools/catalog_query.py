@@ -9,6 +9,11 @@
 - `current`: 분석 구간 끝 시각의 순간값
 - `window_avg`: 분석 구간 평균 `avg_over_time((expr)[구간:step])`
 - `baseline_avg`: 기준 구간 평균 (같은 방식, 기준 구간 끝 시각에서 실행)
+- `window`: `{range}`를 분석 구간 길이로 채워 구간 끝 시각에서 실행 (구간 내 증가량 등)
+
+조건 조회(문제 대상만 결과로 나오는 항목)의 빈 결과는 "해당 없음"일 수도, 데이터가 없는 것일 수도
+있습니다. 호출자는 최신성(`freshness_seconds`)과, 대상 필터가 있으면 `coverage()`로 대상 시계열
+존재를 확인한 뒤에만 "해당 없음"으로 판단해야 합니다.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ class QueryMode(StrEnum):
     CURRENT = "current"
     WINDOW_AVG = "window_avg"
     BASELINE_AVG = "baseline_avg"
+    WINDOW = "window"
 
 
 class ToolPermissionError(Exception):
@@ -108,6 +114,7 @@ class CatalogQueryTool:
         self._budget = budget
         self._timeout = timeout_seconds
         self._freshness_cache: dict[str, float | None] = {}
+        self._coverage_cache: dict[tuple[str, str], int | None] = {}
 
     def item(self, key: str) -> CatalogItem:
         item = self._catalog.items.get(key)
@@ -125,6 +132,10 @@ class CatalogQueryTool:
     def build_expr(
         self, item: CatalogItem, selector: str, mode: QueryMode, ctx: AnalysisContext
     ) -> str:
+        if mode is QueryMode.WINDOW:
+            if not item.uses_range:
+                raise ValueError("window 조회는 {range}가 있는 항목만 가능합니다")
+            return item.render(selector, range=_seconds(ctx.time_range.duration.total_seconds()))
         expr = item.render(selector, range=RATE_RANGE if item.uses_range else None)
         if mode is QueryMode.CURRENT:
             return expr
@@ -150,7 +161,7 @@ class CatalogQueryTool:
             if ctx.baseline_range is None:
                 raise ValueError("baseline_avg 조회에는 baseline_range가 필요합니다")
             window = ctx.baseline_range
-        elif mode is QueryMode.WINDOW_AVG:
+        elif mode in (QueryMode.WINDOW_AVG, QueryMode.WINDOW):
             window = ctx.time_range
         else:
             window = None
@@ -234,6 +245,35 @@ class CatalogQueryTool:
                 unit=item.unit,
             )
         )
+
+    async def coverage(
+        self, key: str, targets: Mapping[TargetKind, str], at: datetime
+    ) -> int | None:
+        """요청 대상으로 필터링한 기준 지표의 시계열 수. 대상 필터가 없으면 확인하지 않고 None.
+
+        조건 조회의 빈 결과를 "해당 없음"으로 판단하기 전에, 대상 이름이 실제 데이터와 맞는지
+        (예: 오타난 namespace) 확인하는 데 씁니다. 확인에 실패하면 None.
+        """
+        if not targets:
+            return None
+        item = self.item(key)
+        selector, unsupported = item.selector_for(targets)
+        if unsupported or not item.requires_metrics:
+            return None
+        metric = item.requires_metrics[0]
+        cache_key = (metric, selector)
+        if cache_key not in self._coverage_cache:
+            if not self._budget.take():
+                return None
+            expr = f"count({metric}{{{selector}}})"
+            try:
+                result = await asyncio.wait_for(self._prom.query(expr, at), timeout=self._timeout)
+            except (TimeoutError, DataSourceError):
+                self._coverage_cache[cache_key] = None
+            else:
+                values = [s.value for s in result.samples if not math.isnan(s.value)]
+                self._coverage_cache[cache_key] = int(values[0]) if values else 0
+        return self._coverage_cache[cache_key]
 
     async def freshness(self, item: CatalogItem, at: datetime) -> float | None:
         """항목이 필요로 하는 지표 중 가장 오래된 최신 샘플의 경과 시간(초). 확인 실패 시 None."""
