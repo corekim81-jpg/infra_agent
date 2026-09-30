@@ -18,6 +18,10 @@
 2. 그 구간의 오류 키워드 로그 수(전체 로그 수로 존재 확인)와 샘플, 오류 트레이스를 조회합니다.
 3. 오류 로그 샘플과 오류 트레이스에 같은 trace_id가 있으면 "연결됨"으로 기록합니다.
    같은 시간대에 함께 나타났다는 사실만 기록하고 인과를 단정하지 않습니다.
+
+지연 서비스 상세 (응답 지연 p95 기준 초과 또는 직전 구간 대비 증가)
+1. 지연 p95 시계열에서 최고 시점을 찾고, 그 전후 `analysis.peak_window_seconds` 구간을 봅니다.
+2. 그 구간에서 최고 시점 p95 이상 걸린 SERVER span의 트레이스를 검색합니다(느린 트레이스).
 로그 본문은 외부 데이터이며 도구 계층에서 마스킹·길이 제한을 거친 뒤 근거로만 다룹니다.
 """
 
@@ -143,6 +147,8 @@ class _State:
     focus: dict[str, _Focus] = field(default_factory=dict)
     other_errors: dict[str, float] = field(default_factory=dict)
     """SERVER 외 span 종류(CLIENT·INTERNAL 등)에서 오류가 있는 서비스와 최대 오류율."""
+    slow: dict[str, _Focus] = field(default_factory=dict)
+    """응답 지연이 기준을 넘거나 직전 구간보다 늘어난 서비스 (느린 트레이스 상세 대상)."""
     traced: set[str] = field(default_factory=set)
     """span 종류와 관계없이 spanmetrics에 나타난 서비스 (트레이스 검색 대상).
     요청을 받지 않고 호출·소비만 하는 서비스(CLIENT·CONSUMER span만 있음)도 포함합니다."""
@@ -210,10 +216,10 @@ class ServiceAgent:
         if state.rates_ok:
             await self._error_ratios(ctx, targets, col, state)
             for check in LATENCY_CHECKS:
-                await self._latency(check, ctx, targets, col)
+                await self._latency(check, ctx, targets, col, state)
             if ctx.intent in (Intent.COMPARE, Intent.ANOMALY) and ctx.baseline_range is not None:
                 await self._error_increase(ctx, targets, col, state)
-                await self._latency_increase(ctx, targets, col)
+                await self._latency_increase(ctx, targets, col, state)
         await self._dependencies(ctx, targets, col, state)
         focus = sorted(state.focus.values(), key=lambda f: -f.ratio)[: self._cfg.detail_services]
         detailed: list[str] = []
@@ -222,6 +228,11 @@ class ServiceAgent:
                 break
             await self._detail(item, ctx, targets, col)
             detailed.append(item.service)
+        slow = sorted(state.slow.values(), key=lambda f: -f.ratio)[: self._cfg.detail_services]
+        for item in slow:
+            if not self._time_for_detail(col, f"{item.service} 느린 트레이스 확인"):
+                break
+            await self._slow_detail(item, ctx, targets, col)
         asks_logs = any(w in ctx.question.lower() for w in LOG_WORDS)
         if asks_logs and self._time_for_detail(col, "로그·트레이스 개요"):
             await self._overview(ctx, targets, col, state, skip=detailed)
@@ -409,6 +420,7 @@ class ServiceAgent:
         ctx: AnalysisContext,
         targets: Mapping[TargetKind, str],
         col: Collector,
+        state: _State,
     ) -> None:
         result = await fetch_evidence(
             self._tool, self._cfg, check.key, ctx, QueryMode.CURRENT, targets, col
@@ -435,6 +447,10 @@ class ServiceAgent:
         )
         saturated = 0
         for target, value in exceeded[: self._cfg.top_n]:
+            if check.service_level:
+                state.slow.setdefault(
+                    target.name, _Focus(target.name, value, "응답 지연 p95 기준 초과")
+                )
             shown = fmt_value(value, "seconds")
             if top_bound is not None and value >= top_bound * (1 - 1e-9):
                 # 분위수가 마지막 유한 버킷 경계에 걸림 → 실제 값은 그 이상
@@ -545,7 +561,11 @@ class ServiceAgent:
             )
 
     async def _latency_increase(
-        self, ctx: AnalysisContext, targets: Mapping[TargetKind, str], col: Collector
+        self,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+        state: _State,
     ) -> None:
         key = "service.latency_p95"
         pair = await self._window_pair(key, ctx, targets, col)
@@ -578,6 +598,7 @@ class ServiceAgent:
                     basis=JudgementBasis.BASELINE,
                 )
             )
+            state.slow.setdefault(name, _Focus(name, value, "직전 구간 대비 응답 지연 증가"))
         if not increased and compared:
             col.findings.append(
                 Finding(
@@ -704,6 +725,105 @@ class ServiceAgent:
         log_ids = await self._logs_for(focus.service, window, service_targets, col)
         trace_ids = await self._traces_for(focus.service, window, col, expect_errors=True)
         self._link(focus.service, window, log_ids, trace_ids, col)
+
+    async def _slow_detail(
+        self,
+        focus: _Focus,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+    ) -> None:
+        """응답 지연 최고 시점 전후 구간에서 그 시점 p95 이상 걸린 span의 트레이스를 찾습니다.
+
+        지연 p95는 SERVER span 기준이므로 SERVER span만 검색합니다(없으면 모든 span).
+        오래 열린 스트리밍 호출(CLIENT span)이 느린 요청으로 섞이지 않게 하기 위함입니다.
+        """
+        service = focus.service
+        if self._traces is None:
+            col.limit(f"{service}: Tempo가 설정되지 않아 느린 트레이스를 확인하지 않음")
+            return
+        if self._cfg.trace_sample_limit == 0:
+            return
+        service_targets = {**targets, TargetKind.SERVICE: service}
+        key = "service.latency_p95"
+        result = self._record(
+            await self._tool.series_peaks(key, ctx, service_targets, ctx.time_range, label=service),
+            key,
+            col,
+        )
+        if result is None:
+            return
+        rows = [r for r in rows_of(result) if isinstance(r.get("value"), int | float)]
+        server = [r for r in rows if "SERVER" in str(r.get("labels", {})).upper()]
+        candidates = server or rows
+        peak = max(candidates, key=lambda r: float(r["value"]), default=None)  # type: ignore[arg-type]
+        if peak is None or float(peak["value"]) <= 0:  # type: ignore[arg-type]
+            col.limit(
+                f"{service}: 분석 구간 지연 시계열에서 최고 시점을 찾지 못해 "
+                "느린 트레이스를 검색하지 않음"
+            )
+            return
+        value = float(peak["value"])  # type: ignore[arg-type]
+        peak_at = datetime.fromisoformat(str(peak["peak_at"]))
+        half = timedelta(seconds=self._cfg.peak_window_seconds / 2)
+        start = max(ctx.time_range.start, peak_at - half)
+        end = min(ctx.time_range.end, peak_at + half)
+        window = TimeRange(start=start, end=end) if end > start else ctx.time_range
+        span = f"{_hm(window.start)}~{_hm(window.end)}"
+        kind = "SERVER span" if server else "span"
+        col.findings.append(
+            Finding(
+                kind=FindingKind.FACT,
+                statement=f"응답 지연 최고 시점 ({service}, {focus.reason}): {_hm(peak_at)} "
+                f"{fmt_value(value, 'seconds')} (5분 p95 기준). 느린 트레이스는 {span} 구간에서 "
+                f"{fmt_value(value, 'seconds')} 이상 걸린 {kind}을 검색",
+                severity=Severity.INFO,
+                targets=(TargetRef(kind=TargetKind.SERVICE, name=service),),
+                evidence_ids=(result.evidence_id,),
+                basis=JudgementBasis.STATE,
+            )
+        )
+        traces = self._record(
+            await self._traces.search(
+                f"trace.slow@{service}",
+                window,
+                service=service,
+                min_duration_ms=max(1, int(value * 1000)),
+                server_only=bool(server),
+                limit=max(self._cfg.trace_sample_limit, TRACE_LINK_SEARCH_LIMIT),
+            ),
+            "trace.slow",
+            col,
+        )
+        if traces is None:
+            return
+        found = rows_of(traces)
+        if not found:
+            col.limit(
+                f"{service}: {span} 구간에서 {fmt_value(value, 'seconds')} 이상 걸린 {kind} "
+                "트레이스 검색 결과 없음 (p95는 히스토그램 구간으로 계산한 근사값이라 실제 span "
+                "시간과 다를 수 있음)"
+            )
+            return
+        durations = [float(d) for r in found if isinstance(d := r.get("duration_ms"), int | float)]
+        longest = (
+            f", 트레이스 최장 {fmt_value(max(durations) / 1000, 'seconds')}" if durations else ""
+        )
+        shown = found[: self._cfg.trace_sample_limit]
+        col.findings.append(
+            Finding(
+                kind=FindingKind.FACT,
+                statement=f"느린 트레이스 ({service}, {span}, {fmt_value(value, 'seconds')} 이상): "
+                f"검색 {len(found)}건"
+                + ("(검색 상한)" if len(found) >= TRACE_LINK_SEARCH_LIMIT else "")
+                + f"{longest}, 예: "
+                + ", ".join(str(r["trace_id"]) for r in shown),
+                severity=Severity.INFO,
+                targets=(TargetRef(kind=TargetKind.SERVICE, name=service),),
+                evidence_ids=(traces.evidence_id,),
+                basis=JudgementBasis.STATE,
+            )
+        )
 
     def _link(
         self,

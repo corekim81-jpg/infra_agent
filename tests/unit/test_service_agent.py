@@ -49,6 +49,7 @@ PEAK = NOW - timedelta(minutes=10)
 FOCUS = TimeRange(start=PEAK - timedelta(minutes=5), end=PEAK + timedelta(minutes=5))
 TRACE_A = "0bf92f3577b34da6a3ce929d0e0e4736"  # 앞자리 0: Tempo는 이를 뺀 31자리로 돌려줌
 TRACE_B = "00f067aa0ba902b7a3ce929d0e0e4700"
+SLOW_TRACE = "44" * 16
 
 
 def _ctx(intent: Intent = Intent.STATUS, question: str = "q") -> AnalysisContext:
@@ -163,6 +164,27 @@ def _details(ctx: AnalysisContext, fake: FakeBackend, *, lines_total: float = 10
         },
         {"traceID": "11111111111111111111111111111111", "rootServiceName": "frontend"},
     ]
+    # 응답 지연(현재 1.5초, 기준 초과) → 지연 최고 시점과 그 시점 p95 이상 걸린 SERVER span 검색
+    fake.add_range(
+        _expr("service.latency_p95", ctx, sel='service="cart"'),
+        [
+            (
+                {"service": "cart", "span_kind": SERVER},
+                [(NOW - timedelta(minutes=20), 0.3), (PEAK, 2.0), (NOW, 1.5)],
+            ),
+            # 오래 열린 CLIENT 호출은 서비스 응답 지연 기준(SERVER)이 아니므로 무시
+            ({"service": "cart", "span_kind": "SPAN_KIND_CLIENT"}, [(PEAK, 9.0)]),
+        ],
+    )
+    fake.tempo[build_traceql("cart", min_duration_ms=2000, server_only=True)] = [
+        {
+            "traceID": SLOW_TRACE,
+            "rootServiceName": "frontend",
+            "rootTraceName": "GET /api/cart",
+            "durationMs": 3500,
+        },
+        {"traceID": "55" * 16, "rootServiceName": "frontend", "durationMs": 2100},
+    ]
 
 
 async def _run(
@@ -232,9 +254,16 @@ async def test_red_thresholds_and_error_detail() -> None:
     assert "hunter22" not in json.dumps(rows) and "\x1b" not in rows[0]["line"]
     assert "secret_label" not in rows[0]["labels"]
     assert {r["trace_id"] for r in rows} == {TRACE_A, TRACE_B}
+    # 느린 트레이스: SERVER span 기준 최고 시점(2초)으로 검색, CLIENT 9초는 무시
+    slow_peak = next(t for t in texts if t.startswith("응답 지연 최고 시점 (cart"))
+    assert "응답 지연 p95 기준 초과" in slow_peak and " 2초 (5분 p95 기준)" in slow_peak
+    assert "2초 이상 걸린 SERVER span을 검색" in slow_peak
+    slow = next(t for t in texts if t.startswith("느린 트레이스 (cart, "))
+    assert "검색 2건, 트레이스 최장 3.5초" in slow and SLOW_TRACE in slow
     # 근거 ID는 중복 없이 대상별로 구분
     ids = [e.evidence_id for e in result.evidence]
     assert len(ids) == len(set(ids)) and "service.error_ratio@series:cart" in ids
+    assert "service.latency_p95@series:cart" in ids and "trace.slow@cart" in ids
     # 등록하지 않은(빈 결과) 조회는 일부러 비워 둔 DB span·서비스 간 지연뿐
     assert all(
         ("db_system_name" in q or "service_graph_request_server_seconds" in q)
@@ -441,6 +470,10 @@ def test_traceql_rejects_injection() -> None:
     assert (
         build_traceql("cart", errors=True) == '{ resource.service.name = "cart" && status = error }'
     )
+    assert (
+        build_traceql("cart", min_duration_ms=1500, server_only=True)
+        == '{ resource.service.name = "cart" && kind = server && duration > 1500ms }'
+    )
     for bad in ('cart" || true', "a b", ""):
         try:
             build_traceql(bad)
@@ -498,6 +531,26 @@ async def test_answer_question_service_flow() -> None:
     assert "hunter22" not in text
     assert " 구간 조회, " in text and " 시계열(최고 시점 탐색), " in text
     assert " 구간 검색, " in text  # Tempo 검색은 "구간 집계"가 아님
+
+
+async def test_slow_detail_without_matching_traces() -> None:
+    """지연 기준 초과 서비스의 느린 트레이스가 없으면 없다고만 쓰고 정상으로 보지 않음."""
+    ctx = _ctx()
+    fake = FakeBackend()
+    _red(ctx, fake, cart_error=0.0)
+    fake.add(_expr("service.dependency_failed_rate", ctx), [])
+    fake.add_range(
+        _expr("service.latency_p95", ctx, sel='service="cart"'),
+        [({"service": "cart", "span_kind": SERVER}, [(PEAK, 1.5), (NOW, 1.5)])],
+    )
+    result = await _run(ctx, fake)
+    queries = [q for path, q in fake.calls if path.startswith("/api/search")]
+    assert queries == [build_traceql("cart", min_duration_ms=1500, server_only=True)]
+    assert any(
+        x.startswith("cart: ") and "1.5초 이상 걸린 SERVER span 트레이스 검색 결과 없음" in x
+        for x in result.limitations
+    )
+    assert not any(f.statement.startswith("느린 트레이스") for f in result.findings)
 
 
 async def test_detail_skipped_when_agent_time_is_short() -> None:

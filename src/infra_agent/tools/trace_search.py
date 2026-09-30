@@ -32,8 +32,17 @@ def is_service_name(name: str) -> bool:
 
 
 def build_traceql(
-    service: str | None, *, errors: bool = False, min_duration_ms: int | None = None
+    service: str | None,
+    *,
+    errors: bool = False,
+    min_duration_ms: int | None = None,
+    server_only: bool = False,
 ) -> str:
+    """코드가 정한 조건만으로 TraceQL span 조건을 만듭니다.
+
+    `server_only`는 요청을 받은 span(`kind = server`)만 찾습니다. 서비스 응답 지연(SERVER span
+    기준)의 느린 트레이스를 찾을 때, 오래 열린 스트리밍 호출(CLIENT span)이 섞이지 않게 합니다.
+    """
     conditions = []
     if service is not None:
         if not is_service_name(service):
@@ -41,6 +50,8 @@ def build_traceql(
         conditions.append(f'{SERVICE_ATTR} = "{service}"')
     if errors:
         conditions.append("status = error")
+    if server_only:
+        conditions.append("kind = server")
     if min_duration_ms is not None:
         conditions.append(f"duration > {max(1, int(min_duration_ms))}ms")
     return "{ " + " && ".join(conditions) + " }" if conditions else "{ }"
@@ -89,10 +100,13 @@ class TraceSearchTool:
         service: str | None,
         errors: bool = False,
         min_duration_ms: int | None = None,
+        server_only: bool = False,
         limit: int = 3,
     ) -> QueryOutcome:
         try:
-            traceql = build_traceql(service, errors=errors, min_duration_ms=min_duration_ms)
+            traceql = build_traceql(
+                service, errors=errors, min_duration_ms=min_duration_ms, server_only=server_only
+            )
         except ValueError as exc:
             return QueryOutcome(
                 result=self._result(evidence_id, "", window, ToolStatus.ERROR, error=str(exc)),

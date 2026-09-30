@@ -64,11 +64,17 @@ async def test_tempo_error_search_runs(settings: Settings) -> None:
             tempo, agent=AgentName.SERVICE, budget=ToolBudget(5), timeout_seconds=20
         )
         outcome = await tool.search("errors", window, service=None, errors=True, limit=5)
+        # 느린 트레이스 검색식(kind = server, duration)도 Tempo가 받아들이는지 확인
+        slow = await tool.search(
+            "slow", window, service=None, min_duration_ms=1000, server_only=True, limit=5
+        )
     assert outcome.result.status in (ToolStatus.OK, ToolStatus.EMPTY), outcome.result.error
+    assert slow.result.status in (ToolStatus.OK, ToolStatus.EMPTY), slow.result.error
     rows = outcome.result.data or []
     # Tempo의 앞자리 0 생략 형식을 로그와 같은 32자리로 맞췄는지 확인
     assert all(len(str(r["trace_id"])) == 32 for r in rows)
-    print(f"\n오류 트레이스 {len(rows)}건")
+    slow_rows = slow.result.data or []
+    print(f"\n오류 트레이스 {len(rows)}건, 1초 이상 SERVER span 트레이스 {len(slow_rows)}건")
 
 
 @pytest.mark.parametrize(
