@@ -124,7 +124,7 @@
 
 - **Loki 라벨:** `service_name`(18개), `service_namespace`, `k8s_namespace_name`, `k8s_deployment_name`, `k8s_cluster_name`, `deployment_environment_name`.
   **Kubernetes 이벤트가 Loki에 저장되는지는 아직 확인되지 않았습니다**(라벨 이름만으로는 판단 불가).
-- **Service Agent의 Loki 사용(#23):** 카탈로그 `log.lines_total`·`log.error_lines`·`log.error_samples`(대상 라벨 `service_name`, `k8s_namespace_name`). 오류 판정은 본문 키워드(error, exception, fatal, panic) 기준이며, 로그 레벨 필드(`detected_level` 등)와 trace_id 구조화 메타데이터의 존재는 live 결과로 확인한 뒤 조회식 교체를 검토합니다.
+- **Service Agent의 Loki 사용(#23):** 카탈로그 `log.lines_total`·`log.error_lines`·`log.error_samples`(대상 라벨 `service_name`, `k8s_namespace_name`). 오류 판정은 본문 키워드(error, exception, fatal, panic) 기준이며, 로그 레벨 필드(`detected_level` 등) 사용은 검토 중입니다. 개발 서버 live 결과(2026-09-30): 로그가 있는 서비스 18개, 오류 키워드 로그 샘플 3건 모두 trace_id 있음(로그↔트레이스 연결 가능). 앱 서비스가 아닌 클러스터 수준 로그 출처도 `service_name` 라벨로 들어오며 Kubernetes 이벤트일 가능성이 있어 내용 확인이 필요합니다(Kubernetes Agent 이벤트 조회 검토).
 - **Service Agent의 Tempo 사용(#23):** `/api/search` TraceQL `{ resource.service.name = "<서비스>" && status = error }`(서비스 이름 형식 검사 후 리터럴로만 삽입).
 - **Tempo 태그:** resource 42개(`service.name`, `k8s.*` 등), span 149개(`db.system`, `db.statement`, `db.query.text`, `http.*`, `rpc.*` 등), event 16개(`exception.*` 등).
   `db.statement`·`db.query.text`에는 **SQL 원문**이 담기므로 모델 입력 데이터 정책(architecture.md 10.2절) 결정 시 함께 고려합니다.

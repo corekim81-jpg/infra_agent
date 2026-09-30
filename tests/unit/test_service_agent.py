@@ -310,19 +310,61 @@ async def test_error_increase_drives_detail() -> None:
 async def test_overview_when_question_asks_for_logs() -> None:
     ctx = _ctx(question="최근 로그와 트레이스 보여줘")
     fake = FakeBackend()
-    _red(ctx, fake, cart_error=0.0)
+    _red(ctx, fake, cart_error=0.0)  # SERVER span 오류 없음, CLIENT span 오류 90%
     window = ctx.time_range
-    sel = 'service_name=~".+"'
-    fake.loki_metrics[_loki("log.lines_total", window, sel)] = [({"service_name": "cart"}, 500)]
-    fake.loki_metrics[_loki("log.error_lines", window, sel)] = [({"service_name": "cart"}, 7)]
+    everyone = 'service_name=~".+"'
+    events = "kubernetes-cluster"  # 트레이스 지표가 없는 로그 출처 (가상)
+    fake.loki_metrics[_loki("log.lines_total", window, everyone)] = [
+        ({"service_name": "cart"}, 500),
+        ({"service_name": events}, 300),
+    ]
+    fake.loki_metrics[_loki("log.error_lines", window, everyone)] = [
+        ({"service_name": events}, 20),
+        ({"service_name": "cart"}, 7),
+    ]
+    for name, total, errors in ((events, 300, 20), ("cart", 500, 7)):
+        sel = f'service_name="{name}"'
+        fake.loki_metrics[_loki("log.lines_total", window, sel)] = [({"service_name": name}, total)]
+        fake.loki_metrics[_loki("log.error_lines", window, sel)] = [
+            ({"service_name": name}, errors)
+        ]
+    fake.loki_logs[_loki("log.error_samples", window, 'service_name="cart"')] = [
+        ({"service_name": "cart", "trace_id": TRACE_A}, [(PEAK, "error: redis timeout")])
+    ]
+    fake.loki_logs[_loki("log.error_samples", window, f'service_name="{events}"')] = [
+        (
+            {"service_name": events},
+            [(PEAK, "Warning BackOff: back-off restarting failed container")],
+        )
+    ]
     fake.tempo[build_traceql(None, errors=True)] = [
+        {"traceID": TRACE_A, "rootServiceName": "frontend"}
+    ]
+    fake.tempo[build_traceql("cart", errors=True)] = [
         {"traceID": TRACE_A, "rootServiceName": "frontend"}
     ]
     result = await _run(ctx, fake)
     texts = [f.statement for f in result.findings]
-    assert any(t.startswith("오류 키워드 로그가 많은 서비스") and "cart 7건" in t for t in texts)
+    # SERVER span 기준으로는 오류가 없지만, 다른 span 종류의 오류를 "없음"으로 숨기지 않음
+    assert any("SERVER span 오류 없음" in t for t in texts)
+    assert "SERVER 외 span의 오류율(현재, 판정 기준 미적용): cart(CLIENT) 90.0%" in texts
+    assert not any("요청이 있는 서비스 모두 오류 span 없음" in t for t in texts)
+    assert any(
+        t.startswith("오류 키워드 로그가 많은 서비스") and f"{events} 20건, cart 7건" in t
+        for t in texts
+    )
     assert any(t.startswith("오류 트레이스 (") and "frontend 1건" in t for t in texts)
-    assert any("요청이 있는 서비스 모두 오류 span 없음" in t for t in texts)
+    # 오류 로그가 많은 서비스 기준으로 로그 샘플·트레이스를 보고 같은 trace_id를 연결
+    assert any(t.startswith(f"오류 키워드 로그 ({events}, ") for t in texts)
+    assert any(t.startswith("오류 키워드 로그 (cart, ") for t in texts)
+    assert any(
+        t.startswith("오류 로그와 오류 트레이스가 같은 trace_id로 연결됨 (cart") for t in texts
+    )
+    assert any(f"{events}: 트레이스 지표가 없는 로그 출처" in x for x in result.limitations)
+    assert any(x.startswith("기준을 넘거나 증가한 오류 서비스가 없어") for x in result.limitations)
+    assert not any(q == build_traceql(events, errors=True) for _, q in fake.calls)
+    ids = [e.evidence_id for e in result.evidence]
+    assert len(ids) == len(set(ids))
 
 
 def test_traceql_rejects_injection() -> None:
@@ -380,6 +422,7 @@ async def test_answer_question_service_flow() -> None:
     assert "· (트레이스) " in text and TRACE_A in text
     assert "hunter22" not in text
     assert " 구간 조회, " in text and " 시계열(최고 시점 탐색), " in text
+    assert " 구간 검색, " in text  # Tempo 검색은 "구간 집계"가 아님
 
 
 async def test_detail_skipped_when_agent_time_is_short() -> None:

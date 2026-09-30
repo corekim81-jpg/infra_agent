@@ -136,6 +136,8 @@ class _State:
     rates: dict[str, float] = field(default_factory=dict)
     rates_ok: bool = False
     focus: dict[str, _Focus] = field(default_factory=dict)
+    other_errors: dict[str, float] = field(default_factory=dict)
+    """SERVER 외 span 종류(CLIENT·INTERNAL 등)에서 오류가 있는 서비스와 최대 오류율."""
 
 
 @dataclass(frozen=True)
@@ -214,7 +216,7 @@ class ServiceAgent:
         elif any(w in ctx.question.lower() for w in LOG_WORDS) and self._time_for_detail(
             col, "로그·트레이스 개요"
         ):
-            await self._overview(ctx, targets, col)
+            await self._overview(ctx, targets, col, state)
         result = finish(task, self.name, col)
         return await with_explanation(result, self._explainer, ctx)
 
@@ -293,8 +295,11 @@ class ServiceAgent:
         )
         if result is None:
             return
-        rows, _ = _span_kind_rows(value_rows(result))
+        all_rows = value_rows(result)
+        rows, server_only = _span_kind_rows(all_rows)
         ratios = _by_service(rows, "max")
+        if server_only:
+            self._other_span_errors(all_rows, result, col, state)
         judged = {s: r for s, r in state.rates.items() if r >= self._cfg.min_request_rate}
         skipped = len(state.rates) - len(judged)
         if skipped:
@@ -332,7 +337,7 @@ class ServiceAgent:
             return
         top_name, top_value = max(values.items(), key=lambda kv: kv[1])
         text = (
-            "요청이 있는 서비스 모두 오류 span 없음"
+            "SERVER span 오류 없음"
             if top_value == 0
             else f"최대 {top_name} {fmt_value(top_value, 'ratio')}"
         )
@@ -344,6 +349,45 @@ class ServiceAgent:
                 severity=Severity.INFO,
                 evidence_ids=(result.evidence_id, f"service.request_rate@{QueryMode.CURRENT}"),
                 basis=JudgementBasis.THRESHOLD,
+            )
+        )
+
+    def _other_span_errors(
+        self,
+        rows: list[tuple[dict[str, str], float]],
+        result: ToolResult,
+        col: Collector,
+        state: _State,
+    ) -> None:
+        """SERVER 외 span 종류의 오류를 따로 보여 줍니다.
+
+        서비스 단위 판정은 SERVER span 기준이지만, 호출(CLIENT)·내부(INTERNAL) span의 오류가
+        있으면 "오류 없음"으로 읽히지 않도록 사실로 남깁니다(기준 판정은 하지 않음).
+        """
+        errors = sorted(
+            (
+                (labels.get("service", "?"), labels.get("span_kind", "?"), v)
+                for labels, v in rows
+                if v > 0 and "SERVER" not in labels.get("span_kind", "").upper()
+            ),
+            key=lambda x: -x[2],
+        )
+        for service, _, value in errors:
+            state.other_errors[service] = max(state.other_errors.get(service, 0.0), value)
+        if not errors:
+            return
+        shown = ", ".join(
+            f"{svc}({kind.removeprefix('SPAN_KIND_')}) {fmt_value(v, 'ratio')}"
+            for svc, kind, v in errors[: self._cfg.top_n]
+        )
+        more = f" 외 {len(errors) - self._cfg.top_n}개" if len(errors) > self._cfg.top_n else ""
+        col.findings.append(
+            Finding(
+                kind=FindingKind.FACT,
+                statement=f"SERVER 외 span의 오류율(현재, 판정 기준 미적용): {shown}{more}",
+                severity=Severity.INFO,
+                evidence_ids=(result.evidence_id,),
+                basis=JudgementBasis.STATE,
             )
         )
 
@@ -463,7 +507,7 @@ class ServiceAgent:
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,
-                    statement=f"서비스 오류율: 오류가 있는 서비스 {len(compared)}개 중 "
+                    statement=f"서비스 오류율(SERVER span): 비교 대상 {len(compared)}개 중 "
                     "직전 구간 대비 "
                     f"{fmt_points(self._cfg.min_error_ratio_increase)} 이상 증가한 대상 없음",
                     severity=Severity.INFO,
@@ -616,27 +660,34 @@ class ServiceAgent:
         service_targets = {**targets, TargetKind.SERVICE: focus.service}
         window = await self._peak_window(focus, ctx, service_targets, col)
         log_ids = await self._logs_for(focus.service, window, service_targets, col)
-        trace_ids = await self._traces_for(focus.service, window, col)
+        trace_ids = await self._traces_for(focus.service, window, col, expect_errors=True)
+        self._link(focus.service, window, log_ids, trace_ids, col)
+
+    def _link(
+        self,
+        service: str,
+        window: TimeRange,
+        log_ids: list[str],
+        trace_ids: list[str],
+        col: Collector,
+    ) -> None:
+        """오류 로그 샘플과 오류 트레이스에 같은 trace_id가 있는지 기록합니다 (인과 판단 없음)."""
         linked = sorted(set(log_ids) & set(trace_ids))
         if linked:
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,
                     statement="오류 로그와 오류 트레이스가 같은 trace_id로 연결됨 "
-                    f"({focus.service}, "
-                    f"{_hm(window.start)}~{_hm(window.end)}): " + ", ".join(linked[:3]),
+                    f"({service}, {_hm(window.start)}~{_hm(window.end)}): " + ", ".join(linked[:3]),
                     severity=Severity.INFO,
-                    targets=(TargetRef(kind=TargetKind.SERVICE, name=focus.service),),
-                    evidence_ids=(
-                        f"log.error_samples@{focus.service}",
-                        f"trace.errors@{focus.service}",
-                    ),
+                    targets=(TargetRef(kind=TargetKind.SERVICE, name=service),),
+                    evidence_ids=(f"log.error_samples@{service}", f"trace.errors@{service}"),
                     basis=JudgementBasis.STATE,
                 )
             )
         elif log_ids and trace_ids:
             col.limit(
-                f"{focus.service}: 오류 로그 샘플의 trace_id가 조회한 오류 트레이스 "
+                f"{service}: 오류 로그 샘플의 trace_id가 조회한 오류 트레이스 "
                 f"{len(trace_ids)}건과 겹치지 않음 (샘플 범위가 달라 연결하지 못했을 수 있음)"
             )
 
@@ -766,7 +817,10 @@ class ServiceAgent:
             )
         return trace_ids
 
-    async def _traces_for(self, service: str, window: TimeRange, col: Collector) -> list[str]:
+    async def _traces_for(
+        self, service: str, window: TimeRange, col: Collector, *, expect_errors: bool
+    ) -> list[str]:
+        """서비스의 오류 트레이스 검색. `expect_errors`면 결과가 없을 때 지표와의 불일치로 표시."""
         if self._traces is None:
             col.limit(f"{service}: Tempo가 설정되지 않아 트레이스를 확인하지 않음")
             return []
@@ -791,6 +845,8 @@ class ServiceAgent:
             col.limit(
                 f"{service}: 오류율은 있지만 {span} 구간 오류 트레이스 검색 결과가 없음 "
                 "(트레이스 보존·샘플링·검색 지연 가능)"
+                if expect_errors
+                else f"{service}: {span} 구간 오류 트레이스 검색 결과 없음"
             )
             return []
         shown = rows[: self._cfg.trace_sample_limit]
@@ -812,50 +868,88 @@ class ServiceAgent:
     # ------------------------------------------------------------------ 개요 (오류 서비스 없음)
 
     async def _overview(
-        self, ctx: AnalysisContext, targets: Mapping[TargetKind, str], col: Collector
+        self,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+        state: _State,
     ) -> None:
-        """질문이 로그·트레이스를 묻지만 기준을 넘는 오류 서비스가 없을 때의 개요."""
+        """질문이 로그·트레이스를 묻지만 기준을 넘는 오류 서비스가 없을 때.
+
+        1. 분석 구간의 서비스별 오류 키워드 로그 수와 오류 트레이스(루트 서비스별) 개요
+        2. 오류 로그가 많은 서비스(없으면 SERVER 외 span 오류가 있는 서비스) 상위
+           `detail_services`개에 대해 로그 샘플·오류 트레이스·trace_id 연결
+        """
         window = ctx.time_range
         span = f"{_hm(window.start)}~{_hm(window.end)}"
+        col.limit(
+            "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스 기준으로 "
+            f"{span} 구간의 로그·트레이스를 확인함"
+        )
+        log_counts = await self._overview_logs(window, targets, col, span)
+        await self._overview_traces(window, col, span)
+        candidates = [name for name, n in log_counts if n > 0]
+        candidates += [s for s, _ in sorted(state.other_errors.items(), key=lambda x: -x[1])]
+        picked = list(dict.fromkeys(candidates))[: self._cfg.detail_services]
+        for service in picked:
+            if not self._time_for_detail(col, f"{service} 로그·트레이스 확인"):
+                break
+            service_targets = {**targets, TargetKind.SERVICE: service}
+            log_ids = await self._logs_for(service, window, service_targets, col)
+            if service not in state.rates:
+                # spanmetrics에 없는 로그 출처(예: 수집기·클러스터 로그)는 트레이스를 검색하지 않음
+                col.limit(f"{service}: 트레이스 지표가 없는 로그 출처라 트레이스를 검색하지 않음")
+                continue
+            trace_ids = await self._traces_for(service, window, col, expect_errors=False)
+            self._link(service, window, log_ids, trace_ids, col)
+
+    async def _overview_logs(
+        self,
+        window: TimeRange,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+        span: str,
+    ) -> list[tuple[str, float]]:
+        """서비스별 오류 키워드 로그 수 (많은 순). 확인하지 못하면 빈 목록."""
         if self._logs is None:
             col.limit("Loki가 설정되지 않아 로그를 확인하지 않음")
-        else:
-            total = self._record(
-                await self._logs.count(
-                    "log.lines_total", window, targets, "log.lines_total@window"
-                ),
-                "log.lines_total",
-                col,
+            return []
+        total = self._record(
+            await self._logs.count("log.lines_total", window, targets, "log.lines_total@window"),
+            "log.lines_total",
+            col,
+        )
+        errors = self._record(
+            await self._logs.count("log.error_lines", window, targets, "log.error_lines@window"),
+            "log.error_lines",
+            col,
+        )
+        if total is None or errors is None:
+            return []
+        if sum(v for _, v in value_rows(total)) <= 0:
+            col.limit(f"{span} 구간의 로그가 없어 오류 로그를 판단하지 않음")
+            return []
+        counts = sorted(
+            ((labels.get("service_name", "?"), v) for labels, v in value_rows(errors)),
+            key=lambda x: -x[1],
+        )
+        text = (
+            ", ".join(f"{n} {v:.0f}건" for n, v in counts[: self._cfg.top_n])
+            if counts
+            else "해당 로그 없음"
+        )
+        col.findings.append(
+            Finding(
+                kind=FindingKind.FACT,
+                statement=f"오류 키워드 로그가 많은 서비스 ({span}): {text}",
+                severity=Severity.INFO,
+                evidence_ids=(total.evidence_id, errors.evidence_id),
+                basis=JudgementBasis.STATE,
             )
-            errors = self._record(
-                await self._logs.count(
-                    "log.error_lines", window, targets, "log.error_lines@window"
-                ),
-                "log.error_lines",
-                col,
-            )
-            if total is not None and errors is not None:
-                if sum(v for _, v in value_rows(total)) <= 0:
-                    col.limit(f"{span} 구간의 로그가 없어 오류 로그를 판단하지 않음")
-                else:
-                    counts = sorted(
-                        ((labels.get("service_name", "?"), v) for labels, v in value_rows(errors)),
-                        key=lambda x: -x[1],
-                    )
-                    text = (
-                        ", ".join(f"{n} {v:.0f}건" for n, v in counts[: self._cfg.top_n])
-                        if counts
-                        else "해당 로그 없음"
-                    )
-                    col.findings.append(
-                        Finding(
-                            kind=FindingKind.FACT,
-                            statement=f"오류 키워드 로그가 많은 서비스 ({span}): {text}",
-                            severity=Severity.INFO,
-                            evidence_ids=(total.evidence_id, errors.evidence_id),
-                            basis=JudgementBasis.STATE,
-                        )
-                    )
+        )
+        return counts
+
+    async def _overview_traces(self, window: TimeRange, col: Collector, span: str) -> None:
         if self._traces is None:
             col.limit("Tempo가 설정되지 않아 트레이스를 확인하지 않음")
             return

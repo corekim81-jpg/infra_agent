@@ -7,7 +7,14 @@ from datetime import datetime
 from infra_agent.orchestration.executor import TaskRun
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.orchestration.runner import AnswerBundle
-from infra_agent.schemas import AgentStatus, EvidenceSummary, Intent, Severity, TimeRange
+from infra_agent.schemas import (
+    AgentStatus,
+    DataSourceKind,
+    EvidenceSummary,
+    Intent,
+    Severity,
+    TimeRange,
+)
 from infra_agent.units import fmt_time
 
 _INTENT = {
@@ -55,7 +62,9 @@ def _evidence_window(e: EvidenceSummary, at: datetime) -> str:
     if e.time_range is None:
         return f"{_t(at)} 시점"
     evidence_id = str(e.key_values.get("id", ""))
-    if evidence_id.endswith(("@window_avg", "@baseline_avg")):
+    if e.source is DataSourceKind.TEMPO:
+        suffix = " 구간 검색"
+    elif evidence_id.endswith(("@window_avg", "@baseline_avg")):
         suffix = " 평균"
     elif "@series" in evidence_id:
         suffix = " 시계열(최고 시점 탐색)"
@@ -88,7 +97,7 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
     lines.append(f"- 대상: {targets}")
     if ctx.intent is Intent.STATUS and any(_is_window(e) for e in answer.evidence):
         # 상태 질문이라도 재시작·OOM처럼 구간 전체를 집계한 항목이 있으면 그 구간을 밝힙니다.
-        lines.append(f"- 구간 집계 항목(재시작·OOM 등)의 구간: {_range(ctx.time_range)}")
+        lines.append(f"- 구간 집계 항목(재시작·OOM·로그 수 등)의 구간: {_range(ctx.time_range)}")
     lines.append(f"- 해석 방식: {_method(interp)}")
     for a in interp.assumptions:
         lines.append(f"- 가정: {a}")
