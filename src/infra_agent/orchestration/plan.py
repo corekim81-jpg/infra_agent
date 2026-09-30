@@ -36,6 +36,10 @@ DEPENDENCIES: Mapping[AgentName, tuple[AgentName, ...]] = {
 }
 """두 에이전트가 모두 계획에 있을 때만 적용합니다. 선행 에이전트가 없으면 독립 실행합니다."""
 
+OPTIONAL_UPSTREAM: frozenset[AgentName] = frozenset({AgentName.NETWORK, AgentName.DB})
+"""선행 결과가 없어도 분석할 수 있는 에이전트. 선행 작업이 실패해도 건너뛰지 않고 실행합니다
+(현재 선행 결과는 중복 조회를 피하는 데만 쓰며, 교차 분석은 12단계)."""
+
 _AGENT_ORDER: tuple[AgentName, ...] = (
     AgentName.SERVER,
     AgentName.KUBERNETES,
@@ -55,6 +59,8 @@ class ExecutionPlan:
     tasks: tuple[AgentTask, ...]
     unavailable: tuple[AgentName, ...] = ()
     """질문 분야에 해당하지만 구현되지 않아 계획에 넣지 않은 에이전트."""
+    optional_upstream: frozenset[AgentName] = frozenset()
+    """선행 작업이 실패해도 실행하는 에이전트 (`OPTIONAL_UPSTREAM` 중 계획에 있는 것)."""
 
     def __post_init__(self) -> None:
         validate(self.tasks)
@@ -109,4 +115,8 @@ def build_plan(domains: Collection[str], available: Collection[AgentName]) -> Ex
         )
         for agent in selected
     )
-    return ExecutionPlan(tasks=tasks, unavailable=unavailable)
+    return ExecutionPlan(
+        tasks=tasks,
+        unavailable=unavailable,
+        optional_upstream=frozenset(a for a in selected if a in OPTIONAL_UPSTREAM),
+    )

@@ -21,9 +21,11 @@ from infra_agent.agents.base import Agent
 from infra_agent.agents.db import DbAgent
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.kubernetes import KubernetesAgent
+from infra_agent.agents.network import NetworkAgent
 from infra_agent.agents.prompts import (
     DB_SYSTEM_PROMPT,
     KUBERNETES_SYSTEM_PROMPT,
+    NETWORK_SYSTEM_PROMPT,
     SERVER_SYSTEM_PROMPT,
     SERVICE_SYSTEM_PROMPT,
 )
@@ -39,7 +41,7 @@ from infra_agent.llm import BudgetedLLM, LLMClient, LLMUnavailableError, make_ll
 from infra_agent.llm.policy import allows_observations
 from infra_agent.orchestration.executor import Executor, TaskRun
 from infra_agent.orchestration.llm_interpret import interpret_with_model
-from infra_agent.orchestration.plan import ExecutionPlan, build_plan
+from infra_agent.orchestration.plan import DOMAIN_AGENTS, ExecutionPlan, build_plan
 from infra_agent.orchestration.rules import Interpretation, interpret
 from infra_agent.schemas import (
     AgentName,
@@ -157,13 +159,22 @@ def _build_db(deps: AgentDeps) -> Agent:
     )
 
 
+def _build_network(deps: AgentDeps) -> Agent:
+    return NetworkAgent(
+        _tool(deps, AgentName.NETWORK),
+        deps.settings.analysis,
+        _explainer(deps, AgentName.NETWORK, NETWORK_SYSTEM_PROMPT),
+    )
+
+
 AGENT_BUILDERS: Mapping[AgentName, Callable[[AgentDeps], Agent]] = {
     AgentName.SERVER: _build_server,
     AgentName.KUBERNETES: _build_kubernetes,
     AgentName.SERVICE: _build_service,
     AgentName.DB: _build_db,
+    AgentName.NETWORK: _build_network,
 }
-"""구현된 에이전트. 이후 Network 에이전트를 여기에 추가합니다."""
+"""구현된 에이전트. 등록되지 않은 분야는 "확인하지 못한 영역"으로 답합니다."""
 
 
 def build_context(
@@ -249,6 +260,11 @@ async def answer_question(
         interp = replace(interp, method_note="; ".join(notes))
     ctx = build_context(question, interp, settings, current, budgeted.max_calls if budgeted else 0)
     plan = build_plan(interp.domains, AGENT_BUILDERS.keys())
+    # 질문 해석은 구현 목록(rules.IMPLEMENTED_DOMAINS)으로 미지원 분야를 정하지만, 실제로 등록된
+    # 에이전트가 없는 분야(설정·배포에서 빠진 경우 등)도 "확인하지 못한 영역"으로 답합니다.
+    missing = {d for d, agent in DOMAIN_AGENTS.items() if agent in plan.unavailable}
+    if not missing <= interp.unsupported_domains:
+        interp = replace(interp, unsupported_domains=interp.unsupported_domains | missing)
     report = None
     if plan.tasks:
         async with AsyncExitStack() as stack:

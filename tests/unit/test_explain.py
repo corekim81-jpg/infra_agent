@@ -125,7 +125,7 @@ async def test_valid_hypothesis_kept_invalid_rejected() -> None:
     assert f"분석 구간: {fmt_time(start)} ~ {fmt_time(end)} (UTC " in prompt
     # 구현된 에이전트를 "미구현"으로 안내하지 않음
     assert "Service Agent(미구현" not in SERVER_SYSTEM_PROMPT
-    assert "Network Agent(미구현" in SERVER_SYSTEM_PROMPT
+    assert "Network Agent(Hubble" in SERVER_SYSTEM_PROMPT and "(미구현)" in SERVER_SYSTEM_PROMPT
 
 
 async def test_policy_none_and_errors() -> None:

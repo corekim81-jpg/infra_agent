@@ -41,7 +41,7 @@ async def test_model_interpretation_used() -> None:
     assert r.intent is Intent.ANOMALY
     assert r.time_range.duration == timedelta(hours=1) and r.baseline_range is not None
     assert r.targets == {TargetKind.NAMESPACE: "otel-demo"}
-    assert r.unsupported_domains == {"network"}  # 구현되지 않은 분야
+    assert r.domains == {"server", "network"} and r.unsupported_domains == frozenset()
     assert r.method == "model" and r.method_note is None
     assert r.assumptions == ()  # 해석 방식은 가정이 아님
     req = fake.requests[0]

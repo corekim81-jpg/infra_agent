@@ -35,7 +35,7 @@ from infra_agent.agents.common import (
     with_explanation,
 )
 from infra_agent.agents.explain import AgentExplainer
-from infra_agent.agents.formatting import fmt_value, row_key
+from infra_agent.agents.formatting import count_text, fmt_value, row_key, window_text
 from infra_agent.config.settings import AnalysisConfig
 from infra_agent.schemas import (
     AgentName,
@@ -218,21 +218,6 @@ def db_entity(labels: Mapping[str, str]) -> TargetRef:
         )
     }
     return TargetRef(kind=kind, name=name, labels=used)
-
-
-def _count_text(value: float) -> str:
-    """increase() 추정값 표시 (정수에 가까우면 정수, 아니면 '약 N.N')."""
-    rounded = round(value)
-    if abs(value - rounded) < 0.05:
-        return f"{rounded}회"
-    return f"약 {value:.1f}회"
-
-
-def _window_text(ctx: AnalysisContext) -> str:
-    minutes = int(ctx.time_range.duration.total_seconds() // 60)
-    if minutes >= 120 and minutes % 60 == 0:
-        return f"최근 {minutes // 60}시간"
-    return f"최근 {minutes}분"
 
 
 class DbAgent:
@@ -447,7 +432,7 @@ class DbAgent:
         ctx: AnalysisContext,
         col: Collector,
     ) -> None:
-        scope = _window_text(ctx)
+        scope = window_text(ctx)
         # increase() 추정 오차로 생기는 아주 작은 값은 발생으로 보지 않음
         happened = sorted((r for r in rows if r[1] >= 0.5), key=lambda r: -r[1])
         for labels, value in happened[: self._cfg.top_n]:
@@ -455,7 +440,7 @@ class DbAgent:
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,
-                    statement=f"{check.label} ({scope}): {target.name} {_count_text(value)}",
+                    statement=f"{check.label} ({scope}): {target.name} {count_text(value)}",
                     severity=Severity.WARNING,
                     targets=(target,),
                     evidence_ids=(result.evidence_id,),

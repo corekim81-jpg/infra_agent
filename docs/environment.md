@@ -116,6 +116,8 @@
 - **`system_*` 지표:** `k8s_pod_name`·`telemetry_auto_version` 라벨이 붙어 있어 Pod 안의 자동 계측(런타임) 값으로 보입니다. **물리 서버 전체 값으로 사용하지 않으며** 카탈로그에서 제외했습니다. 물리 서버 성능 분석이 필요하면 호스트 수준 수집을 별도로 구성해야 합니다.
 - **Hubble 지표의 `k8s_namespace_name`·`k8s_pod_name`:** 트래픽 대상이 아니라 수집 주체(cilium) Pod를 가리킵니다. 대상 필터는 `source_*`/`destination_*` 라벨을 씁니다.
 - **DNS 오류율:** Hubble DNS 지표에 응답 코드(rcode) 라벨이 없어 판단할 수 없습니다.
+- **DNS 질의량:** 개발 환경 live 확인(2026-09-30) 결과 `hubble_dns_queries_total`의 5분 증가율이 0이었습니다. Hubble DNS 지표는 DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계하므로 실제 DNS 질의량으로 보지 않습니다. 필요하면 CiliumNetworkPolicy의 DNS 규칙(`toPorts.rules.dns`)으로 가시성을 켜야 합니다.
+- **Hubble 드롭 사유:** 개발 환경에서는 `UNSUPPORTED_L3_PROTOCOL`(IPv4·IPv6가 아닌 L3 패킷) 드롭이 출발·도착 라벨 없이 30분에 수십 회 꾸준히 발생합니다. 일반적으로 장애가 아니므로 `analysis.benign_drop_reasons` 기본값으로 정보 표시합니다.
 - **서비스 지표 라벨 차이:** spanmetrics는 `service`, service graph는 `client`/`server`, 나머지는 `service_name`을 씁니다. 카탈로그의 `target_labels`가 이 차이를 흡수합니다.
 - **값 의미 미검증:** `k8s_pod_phase`(1~5 값), `k8s_node_condition_*`(1/0/-1), spanmetrics `status_code`·`span_kind` 값, 커넥션 상태 라벨 값은 가정이며 카탈로그 caveats에 적었습니다.
 - **단위:** `k8s_node_cpu_usage`, `container_cpu_usage`는 cores로 교차 검증됨(2026-09-29 live 테스트). `k8s_pod_cpu_usage`(cores 가정)와 spanmetrics 지연(seconds 가정)은 미검증.
@@ -222,6 +224,7 @@ $env:INFRA_AGENT_LIVE_TESTS = "1"; python -m pytest -m live
 
 > **구현됨 (#9, DB 항목 보완 #25):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 56개(Server 13, Kubernetes 11, Network 8, DB·캐시 17, Service 7)와 Loki 항목 3개. `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지는 `discovered`입니다.
 > #25에서 DB Agent용으로 바꾼 항목: 커넥션 풀 사용률 2개를 사용 중 연결 기준(상태 값 idle 제외)으로 변경, `db.pool_wait_rate`·`cache.valkey_evictions_rejections`를 구간 증가 수 항목(`db.pool_waits_increase`, `cache.valkey_evicted_increase`, `cache.valkey_rejected_increase`)으로 교체, `db.span_latency_p95` 추가(Service 항목과 같은 조회식), 풀 사용률 분모 확인용 `db.pool_max_open_product_catalog` 추가.
+> #27에서 Network Agent용으로 발생 수 항목 5개를 구간 증가량으로 바꿨습니다(`network.drops_increase`, `network.hubble_lost_events_increase`, `network.node_interface_errors_increase`, `network.pod_network_errors_increase`, `network.container_packet_drops_increase`). 로컬 Prometheus 3.5(빈 데이터)에서 전체 Prometheus 항목 조회식 169건을 실행해 문법 오류가 없음을 확인했습니다.
 
 - 항목마다 `target_labels`(대상 종류 → 라벨 이름)를 두어, 에이전트가 대상(네임스페이스·Pod·서비스 등)을 selector로 바꿀 때 사용합니다. 항목이 지원하지 않는 대상은 `selector_for()`가 따로 반환하므로 답변의 한계로 표시해야 합니다.
 - 점검 명령:

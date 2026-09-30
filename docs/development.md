@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 10단계 진행 중 (#25).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25)가 있습니다.
-> Network 에이전트와 Kubernetes API 연동은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 11단계 진행 중 (#27).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27)가 있습니다.
+> Kubernetes API 연동과 분야 간 교차 분석(12단계)은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -147,8 +147,8 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 완료 (#21, PR #22; 개발 서버 live 14건 통과 2026-09-29. 이벤트는 수집 위치 미확인으로 제외, 8b에서 확인) |
 | 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트, 권한 점검, `k8s_*` 도구 | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 계획 |
 | 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 완료 (#23, PR #24; 개발 서버 live 4건 통과 2026-09-30, 병합 후 느린 트레이스 검색식 포함 재확인) |
-| 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 진행 중 (#25; 개발 서버 live 3건 통과 2026-09-30) |
-| 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 계획 |
+| 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 완료 (#25, PR #26; 개발 서버 live 3건 통과 2026-09-30) |
+| 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 진행 중 (#27; 사용자 환경 live 확인 필요) |
 | 12 | 교차 분석과 품질 평가 | Service → (Network ∥ DB) 흐름, 결과 종합, README 대표 질문 평가 세트 | 대표 질문 7개 평가 기록 | 8–11 | 계획 |
 | 13 | 배포·확장 | Containerfile(Rocky Linux 9), Kubernetes 배포·RBAC, MCP 경로, HTTP API | 클러스터 내부 읽기 전용 실행 확인 | 12 | 계획 |
 

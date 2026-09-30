@@ -56,7 +56,7 @@ async def test_permission_enforced() -> None:
         with pytest.raises(ToolPermissionError):
             tool.item("db.pg_backends")
         with pytest.raises(ToolPermissionError):
-            await tool.query("network.drop_rate", _ctx(), QueryMode.CURRENT)
+            await tool.query("network.drops_increase", _ctx(), QueryMode.CURRENT)
         with pytest.raises(ToolPermissionError):
             tool.item("no.such_item")
     assert fake.queries == []

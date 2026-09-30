@@ -58,10 +58,10 @@ def test_overrides_win() -> None:
     assert r.time_range.duration == timedelta(minutes=15)
 
 
-def test_unsupported_domains_reported() -> None:
+def test_all_domains_implemented() -> None:
     r = interpret("서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘", NOW, D30)
     assert {"service", "network", "db"} <= r.domains
-    assert r.unsupported_domains == {"network"}  # Service(#23)·DB(#25)는 구현됨
+    assert r.unsupported_domains == frozenset()  # Service(#23)·DB(#25)·Network(#27) 구현됨
     assert r.intent is Intent.ANOMALY  # "느려진" → 직전 구간 대비 비교
     r2 = interpret("오류가 증가한 시간대의 로그와 트레이스를 연결해서 원인 후보를 알려줘", NOW, D30)
     assert r2.domains == {"service"} and r2.intent is Intent.ANOMALY

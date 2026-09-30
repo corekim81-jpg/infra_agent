@@ -127,10 +127,14 @@ async def test_dependencies_run_after_upstream_and_receive_results() -> None:
 
 
 async def test_timeout_fails_and_dependents_are_skipped() -> None:
+    from dataclasses import replace
+
     log = Log()
     agents = _agents(log, service=FakeAgent(AgentName.SERVICE, log, delay=1.0))
     plan = build_plan({"service", "db", "server"}, ALL)
-    report = await _executor(timeout=0.05).run(plan, agents, _ctx())
+    # 필수 선행(optional_upstream 없음)이면 선행 실패 시 건너뜀
+    required = replace(plan, optional_upstream=frozenset())
+    report = await _executor(timeout=0.05).run(required, agents, _ctx())
     by_id = {r.task_id: r for r in report.results}
     assert by_id["service-1"].status is AgentStatus.FAILED
     assert by_id["service-1"].errors[0].code == "agent_timeout"
@@ -141,6 +145,21 @@ async def test_timeout_fails_and_dependents_are_skipped() -> None:
     assert ("start", "db-1") not in log.events
     run = {r.task_id: r for r in report.runs}["db-1"]
     assert run.reason is not None and "service-1" in run.reason
+
+
+async def test_optional_upstream_runs_after_failed_service() -> None:
+    """DB·Network는 선행 결과 없이도 분석할 수 있어 Service가 실패해도 실행합니다."""
+    log = Log()
+    agents = _agents(log, service=FakeAgent(AgentName.SERVICE, log, delay=1.0))
+    plan = build_plan({"service", "network", "db"}, ALL)
+    assert plan.optional_upstream == {AgentName.NETWORK, AgentName.DB}
+    report = await _executor(timeout=0.05).run(plan, agents, _ctx())
+    by_id = {r.task_id: r for r in report.results}
+    assert by_id["service-1"].status is AgentStatus.FAILED
+    assert by_id["db-1"].status is AgentStatus.SUCCESS
+    assert by_id["network-1"].status is AgentStatus.SUCCESS
+    # 실패한 선행 결과도 그대로 전달 (사용 여부는 에이전트가 판단)
+    assert agents[AgentName.DB].seen_upstream["service-1"].status is AgentStatus.FAILED
 
 
 async def test_exception_is_isolated_and_redacted() -> None:

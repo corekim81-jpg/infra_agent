@@ -1,6 +1,6 @@
 # 아키텍처 설계
 
-> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15), 실행 계획·실행기(4·8절, #19), Kubernetes Agent(3절, #21), Service Agent와 Loki·Tempo 조회(3·7절, #23), DB Agent(3절, #25)가 구현되었습니다. Network 에이전트는 아직 구현되지 않았습니다.
+> **상태: 일부 구현.** 공통 스키마(5절)·설정 모델(#5), 데이터 접근 계층 일부(7절, #7·#9), 카탈로그 조회 도구와 Server Agent·질문 해석·결과 종합(3·4·6절, #11), 모델 계층(10절, #15), 실행 계획·실행기(4·8절, #19), Kubernetes Agent(3절, #21), Service Agent와 Loki·Tempo 조회(3·7절, #23), DB Agent(3절, #25), Network Agent(3절, #27)가 구현되었습니다. 분야 간 교차 분석(12단계)은 아직 없습니다.
 > 구현이 진행되면 각 절에 구현 상태를 표시하고, 설계와 달라진 부분을 이 문서에 반영합니다.
 > 기능 범위의 기준은 [README.md](../README.md)입니다.
 
@@ -99,7 +99,22 @@ flowchart TD
 - 지연 p95가 히스토그램의 최대 유한 버킷 경계와 같으면(`CatalogQueryTool.max_bucket_bound`) "N초 이상(히스토그램 최대 구간)"으로 표시하고 한계에 적음. 스트리밍처럼 오래 열린 호출은 지연이 아니라 연결 유지 시간일 수 있음
 - 로그 본문은 외부 데이터: 도구 계층에서 제어문자 제거·공백 정리·마스킹·길이 제한(200자), 라벨은 서비스·Pod·레벨 관련만 남김. 답변에는 근거별 최대 3건을 "(로그 원문)"으로 표시하고, 모델에는 `data_policy: full`일 때만 근거별 최대 5건을 `<observed_data>` 안에 전달
 - 상세 단계는 에이전트 남은 시간이 조회 1회 제한 시간 + 7초보다 적으면 생략하고 한계에 표시(앞서 판정한 결과가 제한 시간 초과로 버려지지 않게 함)
-- 네트워크·DB 내부 지표는 조회하지 않으므로 "네트워크 문제/DB 문제"를 단정하지 않음. DB 내부 지표는 DB Agent(질문이 DB를 함께 물을 때 Service 다음에 실행), Network Agent는 미구현이며 "확인하지 못한 영역"으로 답함
+- 네트워크·DB 내부 지표는 조회하지 않으므로 "네트워크 문제/DB 문제"를 단정하지 않음. 질문이 함께 물으면 Service 다음에 Network·DB Agent가 병렬로 확인
+
+**Network Agent 구현 (#27):** `agents/network.py`, 지침 `NETWORK_SYSTEM_PROMPT`, 도구 `tools/catalog_query.py`(카탈로그 `network.*`)
+- 구간 내 발생 수(분석 구간 전체 `increase()`, 0.5 이상이면 발생): Hubble 패킷 드롭(사유·출발·도착 워크로드별), 노드 인터페이스 오류, Pod 네트워크 오류, 컨테이너 패킷 드롭. 0이면 최신 데이터일 때만 "발생 없음"
+- 흐름 판정 비율: 네임스페이스 쌍별 DROPPED·ERROR 판정 흐름 비율(`flow_drop_ratio_warning`, 흐름이 `min_request_rate`보다 적은 쌍 제외, 확인한 판정 값을 함께 표시)
+- 현재 값(판정 없음): TCP RST 패킷(RST가 없으면 확인한 플래그 값을 표시), DNS 질의량. DNS 응답 코드·네트워크 지연(RTT)은 수집되지 않아 판단하지 않음
+- Hubble 이벤트 유실이 있으면 정보로 표시하고 Hubble 기반 결과가 불완전할 수 있음을 한계에 적음
+- Hubble 지표의 `k8s_*` 라벨은 수집 주체(cilium)이므로 대상은 `source_*`·`destination_*`로 표시. 빈 값은 "외부·미확인". Prometheus는 빈 값 라벨을 결과에서 빼므로, Hubble 항목은 출발·도착 라벨이 아예 없어도 흐름("외부·미확인 → 외부·미확인")으로 표시
+- 드롭 사유에는 정책 거부처럼 의도된 차단도 있어 드롭이 곧 장애라고 단정하지 않음(한계·지침에 명시)
+- `benign_drop_reasons`(기본 `UNSUPPORTED_L3_PROTOCOL`: IPv4·IPv6가 아닌 L3 패킷, 예: ARP)에 있는 사유는 발생 수를 그대로 보이되 경고가 아닌 정보로 표시하고, 그 사실을 한계에 적음. 표시 순서는 경고 대상 먼저
+- DNS 질의량 합계가 0이면 사실로 표시하지 않고, Hubble DNS 지표는 DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계하므로 실제 질의가 없다는 뜻이 아닐 수 있음을 한계에 적음
+- 네임스페이스·워크로드 필터는 Hubble 항목에서 도착 기준이므로, 필터가 있으면 한계에 적고 판정 문장에 "(도착 기준)"을 붙임. Hubble 이벤트 유실은 관측 품질 점검이라 대상 필터 없이 전체를 봄
+- 흐름이 적어 비율을 판정하지 않은 네임스페이스 쌍은 개수(드롭·오류 판정이 있는 쌍 수 포함)를 한계에 적음. 결과에 TCP 플래그 값이 없으면 RST 여부를 판단하지 않음
+- 선행 Service 결과는 아직 쓰지 않음(교차 분석은 12단계)
+- Network·DB는 선행 결과 없이도 분석할 수 있으므로(`plan.OPTIONAL_UPSTREAM`), Service가 실패해도 건너뛰지 않고 실행
+- 질문 해석에 등록되지 않은 에이전트가 있으면 실행 계획의 `unavailable`을 "확인하지 못한 영역"에 반영(`runner`)
 
 **DB Agent 구현 (#25):** `agents/db.py`, 지침 `DB_SYSTEM_PROMPT`, 도구 `tools/catalog_query.py`(카탈로그 `db.*`·`cache.*`)
 - PostgreSQL 직접 접속 없이 수집 지표로 판정. 높을수록 문제: PostgreSQL 연결 사용률·앱 커넥션 풀 사용률(`utilization_warning/critical`), 롤백 비율(`rollback_ratio_warning`), DB 작업 지연 p95·DB 호출 span 지연 p95(`latency_p95_warning_seconds`, Service Agent의 DB 호출 판정과 같은 기준). 낮을수록 문제: 버퍼 캐시 적중률(`cache_hit_ratio_warning`)
@@ -272,7 +287,7 @@ DataSource (인터페이스)
 ## 8. 실행 제어
 
 > **현재 구현 (#11, #19):** `orchestration/plan.py`(실행 계획), `orchestration/executor.py`(실행기), `agents/base.py`(에이전트 공통 인터페이스).
-> - 계획: 질문 분야 → 에이전트 작업 템플릿. 구현된 에이전트(`runner.AGENT_BUILDERS`)만 넣고 나머지는 "확인하지 못한 영역". 의존 규칙은 Network·DB → Service 선행(두 에이전트가 모두 계획에 있을 때만). 작업 ID 중복·없는 선행 작업·순환을 검증합니다.
+> - 계획: 질문 분야 → 에이전트 작업 템플릿. 구현된 에이전트(`runner.AGENT_BUILDERS`)만 넣고 나머지는 "확인하지 못한 영역". 의존 규칙은 Network·DB → Service 선행(두 에이전트가 모두 계획에 있을 때만). Network·DB는 선택적 선행이라 Service가 실패해도 실행합니다(#27). 작업 ID 중복·없는 선행 작업·순환을 검증합니다.
 > - 실행: 선행 작업이 끝난 작업부터 시작하고, 동시에 실행되는 에이전트 수를 `execution.max_concurrency`로 제한합니다. 선행 결과는 `upstream`으로 전달합니다.
 > - 제한 시간: 에이전트별 `agent_timeout_seconds`와 요청 마감 시각(`request_timeout_seconds`) 중 먼저 오는 것, 도구 호출별 `tool_timeout_seconds`.
 > - 에이전트 안의 모델 해석은 그 에이전트의 남은 시간(`agents.base.remaining_seconds()`) 안에서만 실행합니다. 남은 시간이 부족하면 생략하고, 시간 안에 응답이 없으면 해석만 버리고 코드 판정 결과는 유지합니다(에이전트 제한 시간 초과로 결과 전체가 버려지는 것을 방지).
