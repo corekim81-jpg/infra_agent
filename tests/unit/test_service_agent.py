@@ -316,6 +316,13 @@ async def test_overview_when_question_asks_for_logs() -> None:
     fake = FakeBackend()
     _red(ctx, fake, cart_error=0.0)  # SERVER span 오류 없음, CLIENT span 오류 90%
     fake.add(_expr("service.dependency_failed_rate", ctx), [])  # 호출 실패도 없음
+    # 요청을 받지 않고 호출·소비만 하는 서비스(SERVER span 없음)도 트레이스 대상임
+    fake.responses[(_expr("service.request_rate", ctx), None)].append(
+        ({"service": "worker", "span_kind": "SPAN_KIND_CONSUMER", "status_code": "x"}, 0.5)
+    )
+    fake.responses[(_expr("service.error_ratio", ctx), None)].append(
+        ({"service": "worker", "span_kind": "SPAN_KIND_CLIENT"}, 1.0)
+    )
     window = ctx.time_range
     everyone = 'service_name=~".+"'
     events = "kubernetes-cluster"  # 트레이스 지표가 없는 로그 출처 (가상)
@@ -352,7 +359,9 @@ async def test_overview_when_question_asks_for_logs() -> None:
     texts = [f.statement for f in result.findings]
     # SERVER span 기준으로는 오류가 없지만, 다른 span 종류의 오류를 "없음"으로 숨기지 않음
     assert any("SERVER span 오류 없음" in t for t in texts)
-    assert "SERVER 외 span의 오류율(현재, 판정 기준 미적용): cart(CLIENT) 90.0%" in texts
+    assert (
+        "SERVER 외 span의 오류율(현재, 판정 기준 미적용): worker(CLIENT) 100.0%, cart(CLIENT) 90.0%"
+    ) in texts
     assert not any("요청이 있는 서비스 모두 오류 span 없음" in t for t in texts)
     assert any(
         t.startswith("오류 키워드 로그가 많은 서비스") and f"{events} 20건, cart 7건" in t
@@ -370,8 +379,15 @@ async def test_overview_when_question_asks_for_logs() -> None:
         x == f"트레이스 지표가 없는 로그 출처는 서비스 상세 확인에서 제외함: {events}"
         for x in result.limitations
     )
-    assert any(x.startswith("기준을 넘거나 증가한 오류 서비스가 없어") for x in result.limitations)
+    assert (
+        "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스·SERVER 외 span 오류가 "
+        "있는 서비스 기준으로"
+    ) in next(x for x in result.limitations if x.startswith("기준을 넘거나"))
+    assert next(x for x in result.limitations if x.startswith("기준을 넘거나")).endswith(
+        ": cart, worker"
+    )
     assert not any(q == build_traceql(events, errors=True) for _, q in fake.calls)
+    assert any(q == build_traceql("worker", errors=True) for _, q in fake.calls)
     ids = [e.evidence_id for e in result.evidence]
     assert len(ids) == len(set(ids))
 

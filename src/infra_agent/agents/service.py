@@ -68,7 +68,7 @@ from infra_agent.units import fmt_points, fmt_time, fmt_value
 SCOPE_NOTE = (
     "Service 분석은 트레이스에서 파생된 spanmetrics·service graph 지표 기준이며, "
     "트레이스 샘플링에 따라 실제 요청 수와 다를 수 있습니다. "
-    "오류 로그는 로그 레벨이 아니라 본문 키워드 기준입니다."
+    "오류 로그는 본문 키워드(단어 단위) 기준이며, 레벨이 INFO 이하로 표시된 줄은 제외합니다."
 )
 LOG_WORDS = ("로그", "log", "트레이스", "trace", "추적", "원인")
 """질문에 이 단어가 있으면 오류 서비스가 없어도 로그·트레이스 개요를 조회합니다."""
@@ -138,6 +138,9 @@ class _State:
     focus: dict[str, _Focus] = field(default_factory=dict)
     other_errors: dict[str, float] = field(default_factory=dict)
     """SERVER 외 span 종류(CLIENT·INTERNAL 등)에서 오류가 있는 서비스와 최대 오류율."""
+    traced: set[str] = field(default_factory=set)
+    """span 종류와 관계없이 spanmetrics에 나타난 서비스 (트레이스 검색 대상).
+    요청을 받지 않고 호출·소비만 하는 서비스(CLIENT·CONSUMER span만 있음)도 포함합니다."""
 
 
 @dataclass(frozen=True)
@@ -235,7 +238,9 @@ class ServiceAgent:
         )
         if result is None:
             return
-        rows, server_only = _span_kind_rows(value_rows(result))
+        all_rows = value_rows(result)
+        state.traced = {labels["service"] for labels, _ in all_rows if labels.get("service")}
+        rows, server_only = _span_kind_rows(all_rows)
         if not server_only:
             col.limit(f"{key}: SERVER span이 없어 모든 span 종류의 호출로 판단함")
         rates = _by_service(rows, "sum")
@@ -652,7 +657,7 @@ class ServiceAgent:
                 )
             )
             # 실패를 응답한 쪽(server)이 트레이스 지표가 있는 서비스면 로그·트레이스 상세 대상
-            if server in state.rates and server not in state.focus:
+            if server in state.traced and server not in state.focus:
                 state.focus[server] = _Focus(server, ratio, f"{client} → {server} 호출 실패")
         if exceeded or not (is_fresh(total, self._cfg) and is_fresh(failed, self._cfg)):
             return
@@ -923,17 +928,23 @@ class ServiceAgent:
         by_logs = [name for name, n in log_counts if n > 0]
         others = sorted(state.other_errors.items(), key=lambda x: -x[1])
         candidates = list(dict.fromkeys(by_logs + [s for s, _ in others]))
-        non_service = [s for s in candidates if s not in state.rates]
+        non_service = [s for s in candidates if s not in state.traced]
         if non_service:
             col.limit(
                 "트레이스 지표가 없는 로그 출처는 서비스 상세 확인에서 제외함: "
                 + ", ".join(non_service[: self._cfg.top_n])
             )
-        picked = [s for s in candidates if s in state.rates and s not in skip][:slots]
+        picked = [s for s in candidates if s in state.traced and s not in skip][:slots]
         if picked and not skip:
+            basis = []
+            if any(s in by_logs for s in picked):
+                basis.append("오류 로그가 많은 서비스")
+            if any(s not in by_logs for s in picked):
+                basis.append("SERVER 외 span 오류가 있는 서비스")
             col.limit(
-                "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스 기준으로 "
-                f"{span} 구간의 로그·트레이스를 확인함"
+                "기준을 넘거나 증가한 오류 서비스가 없어, "
+                f"{'·'.join(basis)} 기준으로 {span} 구간의 로그·트레이스를 확인함: "
+                + ", ".join(picked)
             )
         for service in picked:
             if not self._time_for_detail(col, f"{service} 로그·트레이스 확인"):

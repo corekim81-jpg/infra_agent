@@ -124,7 +124,8 @@
 
 - **Loki 라벨:** `service_name`(18개), `service_namespace`, `k8s_namespace_name`, `k8s_deployment_name`, `k8s_cluster_name`, `deployment_environment_name`.
   **Kubernetes 이벤트가 Loki에 저장되는지는 아직 확인되지 않았습니다**(라벨 이름만으로는 판단 불가).
-- **Service Agent의 Loki 사용(#23):** 카탈로그 `log.lines_total`·`log.error_lines`·`log.error_samples`(대상 라벨 `service_name`, `k8s_namespace_name`). 오류 판정은 본문 키워드(error, exception, fatal, panic) 기준이며, 로그 레벨 필드(`detected_level` 등) 사용은 검토 중입니다. 개발 서버 live 결과(2026-09-30): 로그가 있는 서비스 18개, 앱 로그 샘플에 trace_id가 있음(로그↔트레이스 연결 가능), OTLP 로그에 레벨 필드가 있음. 키워드만으로는 INFO 로그의 단어 일부(`...Error`)가 오류로 잡혀, 단어 단위 매칭과 INFO·DEBUG·TRACE 레벨 제외를 적용했습니다(레벨 필드 이름 `severity_text`·`detected_level` 중 실제 사용 필드는 live 재확인 필요).
+- **Service Agent의 Loki 사용(#23):** 카탈로그 `log.lines_total`·`log.error_lines`·`log.error_samples`(대상 라벨 `service_name`, `k8s_namespace_name`). 오류 판정은 본문 키워드(error, exception, fatal, panic, 단어 단위) 기준이며, 레벨 필드(`severity_text`·`detected_level`)가 INFO·DEBUG·TRACE인 줄은 제외합니다. 개발 서버 live 결과(2026-09-30): 로그가 있는 서비스 18개, 앱 로그 샘플에 trace_id가 있음(로그↔트레이스 연결 가능), OTLP 로그에 레벨 필드가 있음. 키워드만으로는 INFO 로그의 단어 일부(`...Error`)가 오류로 잡혔으나, 단어 단위 매칭과 레벨 제외를 적용한 뒤 live 재실행에서 조회식이 정상 동작하고 해당 오탐(product-reviews)이 0건이 됨을 확인했습니다. 두 레벨 필드 중 어느 쪽이 제외에 쓰였는지는 따로 확인하지 않았습니다.
+- **호출·소비만 하는 서비스:** fraud-detection처럼 SERVER span 없이 CLIENT·CONSUMER span만 있는 서비스가 있습니다. Service Agent는 요청량·오류율 판정은 SERVER span 기준으로 하되, 로그·트레이스 상세 확인 대상은 span 종류와 관계없이 spanmetrics에 나타난 서비스로 봅니다.
 - **클러스터 객체 로그:** 앱 서비스가 아닌 로그 출처 하나가 `service_name` 라벨로 들어오며, 내용은 Kubernetes 이벤트가 아니라 Pod 객체 JSON 전체입니다(k8s 객체 수집으로 보임). Service Agent는 이를 서비스 상세 확인에서 제외합니다. Pod 상태(종료 사유 등)를 담고 있어 Kubernetes Agent의 종료 사유 확인 경로로 검토할 수 있습니다.
 - **Tempo service graph 지연 히스토그램:** 최대 유한 버킷이 12.8초로, p95가 12.8초이면 실제 값은 그 이상입니다. flagd EventStream처럼 수 분간 열려 있는 스트리밍 호출이 여기에 해당합니다.
 - **Service Agent의 Tempo 사용(#23):** `/api/search` TraceQL `{ resource.service.name = "<서비스>" && status = error }`(서비스 이름 형식 검사 후 리터럴로만 삽입).
