@@ -507,6 +507,16 @@ items:
     caveats:
       - "status 라벨 값이 idle(대소문자 무관)인 연결을 유휴로 가정하고 제외함. 상태 값 이름은 개발 서버 값 검토 전 가정"
       - max_open이 0이면 제한 없음을 뜻할 수 있어 비율이 무한대가 되며, 이 경우 결과에서 제외됨
+  db.pool_max_open_product_catalog:
+    agent: db
+    source: prometheus
+    description: product-catalog(Go database/sql) 최대 열린 연결 수 설정 (0이면 제한 없음)
+    unit: connections
+    query: 'max by (service_name) (db_sql_connection_max_open{{{selector}}})'
+    requires_metrics: [db_sql_connection_max_open]
+    target_labels: *app_targets
+    evidence: {status: discovered, checked_at: 2026-09-29}
+    caveats: [사용률 결과가 비었을 때 분모가 0(제한 없음)인지 구분하는 데 씀]
   db.pool_waits_increase:
     agent: db
     source: prometheus

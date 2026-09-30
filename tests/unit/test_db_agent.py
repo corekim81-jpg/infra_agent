@@ -357,3 +357,58 @@ async def test_slow_service_question_runs_service_then_db() -> None:
     assert bundle.answer.unverified_areas == (
         "네트워크: 해당 분야 에이전트가 아직 구현되지 않아 확인하지 않음",
     )
+
+
+async def test_first_bucket_interpolation_is_not_judged() -> None:
+    """p95가 넓은 첫 구간(0~5초) 안의 보간값이면 기준 초과로 판정하지 않음.
+
+    개발 서버 live에서 product-catalog DB 작업 지연 p95가 여러 작업 모두 4.75초로 관측됨.
+    """
+    ctx = _ctx(Intent.ANOMALY)
+    fake = ExprProm()
+    _fill(ctx, fake)
+    assert ctx.baseline_range is not None
+    ops = [
+        ({"service_name": "product-catalog", "db_operation_name": name}, 4.75)
+        for name in ("sql.conn.query", "sql.rows")
+    ]
+    fake.add(_expr("db.client_operation_latency_p95", ctx), ops)
+    for mode, at in (
+        (QueryMode.WINDOW_AVG, ctx.time_range.end),
+        (QueryMode.BASELINE_AVG, ctx.baseline_range.end),
+    ):
+        fake.add(_expr("db.client_operation_latency_p95", ctx, mode), ops, at=at)
+    fake.add(
+        "count by (le) (db_client_operation_duration_seconds_bucket{})",
+        [({"le": le}, 1.0) for le in ("0", "5", "10", "25", "+Inf")],
+    )
+    result = await _run(ctx, fake)
+    texts = [f.statement for f in result.findings]
+    assert not any(t.startswith("DB 작업 지연 p95") for t in texts)
+    note = next(
+        x for x in result.limitations if x.startswith("db.client_operation_latency_p95: 히스토그램")
+    )
+    assert "첫 구간이 0~5초로 넓어" in note and "product-catalog sql.conn.query" in note
+    assert "4.75초" in note and "5초 이하" in note
+    assert any("버킷 경계를 초 단위 지연에 맞게 설정" in x for x in result.next_checks)
+    assert any(
+        "첫 구간(0~5초) 안의 보간값인 대상 2개는 비교하지 않음" in x for x in result.limitations
+    )
+
+
+async def test_pool_with_unlimited_max_open() -> None:
+    ctx = _ctx()
+    fake = ExprProm()
+    _fill(ctx, fake)
+    fake.add(_expr("db.pool_utilization_product_catalog", ctx), [])  # 분모 0 → 무한대라 제외됨
+    fake.add(
+        _expr("db.pool_max_open_product_catalog", ctx), [({"service_name": "product-catalog"}, 0.0)]
+    )
+    result = await _run(ctx, fake)
+    assert any(
+        x.startswith(
+            "db.pool_utilization_product_catalog: product-catalog의 최대 열린 연결 수 설정이 0"
+        )
+        for x in result.limitations
+    )
+    assert not any("풀 지표가 없거나" in x for x in result.limitations)

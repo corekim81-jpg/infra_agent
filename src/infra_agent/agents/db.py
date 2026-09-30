@@ -91,6 +91,9 @@ class DbCheck:
     crit: Callable[[AnalysisConfig], float] | None = None
     empty_note: str = "결과가 없어 판단하지 않음"
     """결과가 비었을 때 한계에 적을 설명 (정상으로 판단하지 않음)."""
+    max_key: str | None = None
+    """비율의 분모(최대 연결 수) 항목.
+    결과가 비면 분모가 0인지 확인해 사유를 구체적으로 적습니다."""
 
 
 def _utilization_warn(cfg: AnalysisConfig) -> float:
@@ -128,6 +131,7 @@ CHECKS: tuple[DbCheck, ...] = (
         _utilization_warn,
         _utilization_crit,
         "결과가 없어 판단하지 않음 (풀 지표가 없거나 최대 열린 연결 수가 0(제한 없음))",
+        max_key="db.pool_max_open_product_catalog",
     ),
     DbCheck("db.pool_waits_increase", "커넥션 풀 대기", Kind.COUNT),
     DbCheck("db.pg_deadlocks_increase", "PostgreSQL 데드락", Kind.COUNT),
@@ -291,12 +295,12 @@ class DbAgent:
         elif check.kind is Kind.COUNT:
             self._count(check, result, rows, ctx, col)
         else:
-            bound = (
-                await self._tool.max_bucket_bound(check.key, targets, ctx.time_range.end)
+            bounds = (
+                await self._tool.bucket_bounds(check.key, targets, ctx.time_range.end)
                 if self._unit(check.key) == "seconds"
                 else None
             )
-            self._threshold(check, result, rows, col, bound)
+            self._threshold(check, result, rows, col, bounds)
 
     def _unit(self, key: str) -> str | None:
         return self._tool.item(key).unit
@@ -313,19 +317,31 @@ class DbAgent:
         result: ToolResult,
         rows: list[tuple[dict[str, str], float]],
         col: Collector,
-        top_bound: float | None = None,
+        bounds: tuple[float, ...] | None = None,
     ) -> None:
         """기준 판정.
 
-        `top_bound`는 지연 히스토그램의 최대 유한 버킷 경계입니다. p95가 이 값과 같으면 실제 값은
-        그 이상이므로 "N초 이상(히스토그램 최대 구간)"으로 표시합니다(Service Agent와 같은 표시).
+        `bounds`는 지연 히스토그램의 유한 버킷 경계(오름차순)입니다.
+        - p95가 최대 경계와 같으면 실제 값은 그 이상이므로 "N초 이상(히스토그램 최대 구간)"으로
+          표시합니다(Service Agent와 같은 표시).
+        - p95가 첫 구간(0 ~ 첫 경계) 안의 보간값이고 첫 경계가 기준 이상이면, 실제 값이 기준을
+          넘는지 알 수 없으므로 판정하지 않고 한계에 적습니다(버킷이 너무 넓은 경우).
         """
         if check.warn is None:
             raise ValueError(f"{check.key}: 판정 기준이 정의되지 않았습니다")
         warn = check.warn(self._cfg)
         crit = check.crit(self._cfg) if check.crit else None
         low = check.kind is Kind.LOW
+        top_bound = bounds[-1] if bounds else None
         rows = sorted(rows, key=lambda r: r[1] if low else -r[1])
+        first = _first_bucket(bounds)
+        if first is not None and not low and first >= warn:
+            unresolved = [r for r in rows if r[1] <= first * (1 + 1e-9)]
+            if unresolved:
+                self._unresolved(check, unresolved, first, warn, col)
+                rows = [r for r in rows if r not in unresolved]
+                if not rows:
+                    return
         bad = [r for r in rows if (r[1] < warn if low else r[1] >= warn)]
         scope = (
             "현재" if not check.key.startswith(("db.pg_rollback", "db.pg_cache")) else "현재, 5분"
@@ -374,6 +390,28 @@ class DbAgent:
                 evidence_ids=(result.evidence_id,),
                 basis=JudgementBasis.THRESHOLD,
             )
+        )
+
+    def _unresolved(
+        self,
+        check: DbCheck,
+        rows: list[tuple[dict[str, str], float]],
+        first: float,
+        warn: float,
+        col: Collector,
+    ) -> None:
+        names = ", ".join(db_entity(labels).name for labels, _ in rows[: self._cfg.top_n])
+        more = f" 외 {len(rows) - self._cfg.top_n}개" if len(rows) > self._cfg.top_n else ""
+        values = sorted({fmt_value(v, "seconds") for _, v in rows})
+        col.limit(
+            f"{check.key}: 히스토그램 첫 구간이 0~{fmt_value(first, 'seconds')}로 넓어 p95를 "
+            f"기준({fmt_value(warn, 'seconds')})과 비교할 수 없음 ({names}{more}; 계산값 "
+            f"{', '.join(values)}은 첫 구간 안을 직선으로 보간한 값이며 실제 값은 "
+            f"{fmt_value(first, 'seconds')} 이하라는 것만 확인됨)"
+        )
+        col.suggest(
+            f"{check.key}의 원천 히스토그램 버킷 경계를 초 단위 지연에 맞게 설정 "
+            "(예: 0.005~5초 구간을 나누는 경계). 현재 설정으로는 DB 작업 지연 판정 불가"
         )
 
     def _count(
@@ -453,7 +491,33 @@ class DbAgent:
                 names = ", ".join(f"{k.value}={v}" for k, v in targets.items())
                 col.limit(f"{check.key}: 요청 대상({names})에 해당하는 시계열이 없어 판단하지 않음")
                 return
+        if check.max_key and await self._max_is_zero(check, ctx, targets, col):
+            return
         col.limit(f"{check.key}: {check.empty_note}")
+
+    async def _max_is_zero(
+        self,
+        check: DbCheck,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+    ) -> bool:
+        """비율의 분모(최대 연결 수)가 0이라 비율이 계산되지 않은 경우를 구분합니다."""
+        if check.max_key is None:
+            return False
+        result = await fetch_evidence(
+            self._tool, self._cfg, check.max_key, ctx, QueryMode.CURRENT, targets, col
+        )
+        rows = value_rows(result) if result is not None else []
+        zero = [labels for labels, v in rows if v == 0]
+        if not zero:
+            return False
+        names = ", ".join(db_entity(labels).name for labels in zero)
+        col.limit(
+            f"{check.key}: {names}의 최대 열린 연결 수 설정이 0(제한 없음)이라 사용률을 계산할 수 "
+            "없음. 풀 부족 여부는 커넥션 풀 대기 발생으로 판단"
+        )
+        return True
 
     # ------------------------------------------------------------------ 직전 구간 대비
 
@@ -477,13 +541,19 @@ class DbAgent:
             col.limit(f"{key}: 분석 구간 또는 기준 구간 결과가 없어 비교할 수 없음")
             return
         before = {row_key(labels): v for labels, v in value_rows(base)}
+        first = _first_bucket(await self._tool.bucket_bounds(key, targets, ctx.time_range.end))
+        coarse = first is not None and first >= self._cfg.min_latency_increase_seconds
         compared = 0
         skipped = 0
+        interpolated = 0
         increased: list[tuple[float, float, dict[str, str]]] = []
         for labels, value in value_rows(cur):
             prev = before.get(row_key(labels))
             if prev is None or prev <= 0:
                 skipped += 1
+                continue
+            if coarse and first is not None and max(value, prev) <= first * (1 + 1e-9):
+                interpolated += 1  # 두 값 모두 첫 구간 안의 보간값이라 변화를 알 수 없음
                 continue
             compared += 1
             if (
@@ -495,6 +565,12 @@ class DbAgent:
         ids = (cur.evidence_id, base.evidence_id)
         if skipped:
             col.limit(f"{key}: 기준 구간 값이 없거나 0인 대상 {skipped}개는 비교하지 않음")
+        if interpolated:
+            col.limit(
+                f"{key}: 두 구간 값이 모두 히스토그램 첫 구간"
+                f"(0~{fmt_value(first or 0.0, 'seconds')}) 안의 보간값인 대상 "
+                f"{interpolated}개는 비교하지 않음"
+            )
         for prev, value, labels in increased[: self._cfg.top_n]:
             target = db_entity(labels)
             col.findings.append(
@@ -526,6 +602,12 @@ class DbAgent:
                     basis=JudgementBasis.BASELINE,
                 )
             )
+
+
+def _first_bucket(bounds: tuple[float, ...] | None) -> float | None:
+    """0보다 큰 가장 작은 버킷 경계 (첫 구간의 상한). OTel 기본 경계는 0을 포함합니다."""
+    positive = [b for b in bounds or () if b > 0]
+    return positive[0] if positive else None
 
 
 def _service_has_db_spans(upstream: Mapping[str, AgentResult]) -> bool:
