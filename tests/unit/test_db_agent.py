@@ -378,9 +378,18 @@ async def test_first_bucket_interpolation_is_not_judged() -> None:
         (QueryMode.BASELINE_AVG, ctx.baseline_range.end),
     ):
         fake.add(_expr("db.client_operation_latency_p95", ctx, mode), ops, at=at)
+    # 같은 지표를 다른 서비스가 좁은 경계(초 단위)로 보내면, 경계를 합쳤을 때 첫 구간이 좁아 보임.
+    # 서비스별 경계로 판단해야 product-catalog의 넓은 첫 구간(0~5초)을 알아챔
+    narrow = ("0.005", "0.01", "0.1", "1", "+Inf")
+    wide = ("0", "5", "10", "25", "+Inf")
     fake.add(
         "count by (le) (db_client_operation_duration_seconds_bucket{})",
-        [({"le": le}, 1.0) for le in ("0", "5", "10", "25", "+Inf")],
+        [({"le": le}, 1.0) for le in narrow + wide],
+    )
+    fake.add(
+        "count by (le, service_name) (db_client_operation_duration_seconds_bucket{})",
+        [({"le": le, "service_name": "accounting"}, 1.0) for le in narrow]
+        + [({"le": le, "service_name": "product-catalog"}, 1.0) for le in wide],
     )
     result = await _run(ctx, fake)
     texts = [f.statement for f in result.findings]

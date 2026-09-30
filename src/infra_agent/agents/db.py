@@ -296,11 +296,31 @@ class DbAgent:
             self._count(check, result, rows, ctx, col)
         else:
             bounds = (
-                await self._tool.bucket_bounds(check.key, targets, ctx.time_range.end)
+                await self._bounds_lookup(check.key, targets, ctx)
                 if self._unit(check.key) == "seconds"
                 else None
             )
             self._threshold(check, result, rows, col, bounds)
+
+    async def _bounds_lookup(
+        self, key: str, targets: Mapping[TargetKind, str], ctx: AnalysisContext
+    ) -> BoundsFor:
+        """결과 행별 히스토그램 버킷 경계를 찾는 함수.
+
+        같은 지표라도 보내는 서비스마다 경계가 다를 수 있어 서비스 라벨별로 조회합니다
+        (라벨이 없거나 조회하지 못하면 전체 경계를 씀).
+        """
+        at = ctx.time_range.end
+        label = self._tool.item(key).target_labels.get(TargetKind.SERVICE)
+        groups = await self._tool.bucket_bounds_by(key, targets, at, label) if label else None
+        merged = None if groups else await self._tool.bucket_bounds(key, targets, at)
+
+        def lookup(labels: Mapping[str, str]) -> tuple[float, ...] | None:
+            if groups and label:
+                return groups.get(labels.get(label, ""))
+            return merged
+
+        return lookup
 
     def _unit(self, key: str) -> str | None:
         return self._tool.item(key).unit
@@ -317,11 +337,11 @@ class DbAgent:
         result: ToolResult,
         rows: list[tuple[dict[str, str], float]],
         col: Collector,
-        bounds: tuple[float, ...] | None = None,
+        bounds: BoundsFor | None = None,
     ) -> None:
         """기준 판정.
 
-        `bounds`는 지연 히스토그램의 유한 버킷 경계(오름차순)입니다.
+        `bounds`는 결과 행의 지연 히스토그램 유한 버킷 경계(오름차순)를 돌려줍니다.
         - p95가 최대 경계와 같으면 실제 값은 그 이상이므로 "N초 이상(히스토그램 최대 구간)"으로
           표시합니다(Service Agent와 같은 표시).
         - p95가 첫 구간(0 ~ 첫 경계) 안의 보간값이고 첫 경계가 기준 이상이면, 실제 값이 기준을
@@ -332,29 +352,34 @@ class DbAgent:
         warn = check.warn(self._cfg)
         crit = check.crit(self._cfg) if check.crit else None
         low = check.kind is Kind.LOW
-        top_bound = bounds[-1] if bounds else None
         rows = sorted(rows, key=lambda r: r[1] if low else -r[1])
-        first = _first_bucket(bounds)
-        if first is not None and not low and first >= warn:
-            unresolved = [r for r in rows if r[1] <= first * (1 + 1e-9)]
-            if unresolved:
-                self._unresolved(check, unresolved, first, warn, col)
-                rows = [r for r in rows if r not in unresolved]
-                if not rows:
-                    return
+        if bounds is not None and not low:
+            unresolved: dict[float, list[tuple[dict[str, str], float]]] = {}
+            for row in rows:
+                first = _first_bucket(bounds(row[0]))
+                if first is not None and first >= warn and row[1] <= first * (1 + 1e-9):
+                    unresolved.setdefault(first, []).append(row)
+            for first, group in unresolved.items():
+                self._unresolved(check, group, first, warn, col)
+            skip = [r for group in unresolved.values() for r in group]
+            rows = [r for r in rows if r not in skip]
+            if not rows:
+                return
         bad = [r for r in rows if (r[1] < warn if low else r[1] >= warn)]
         scope = (
             "현재" if not check.key.startswith(("db.pg_rollback", "db.pg_cache")) else "현재, 5분"
         )
-        saturated = 0
+        saturated: dict[float, int] = {}
         for labels, value in bad[: self._cfg.top_n]:
             target = db_entity(labels)
             is_crit = crit is not None and value >= crit
             limit = fmt_value(crit if is_crit and crit is not None else warn, self._unit(check.key))
             shown = self._show(check.key, value)
+            row_bounds = bounds(labels) if bounds is not None else None
+            top_bound = row_bounds[-1] if row_bounds else None
             if top_bound is not None and value >= top_bound * (1 - 1e-9):
                 shown = f"{shown} 이상(히스토그램 최대 구간)"
-                saturated += 1
+                saturated[top_bound] = saturated.get(top_bound, 0) + 1
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,
@@ -370,10 +395,10 @@ class DbAgent:
             col.limit(
                 f"{check.key}: 기준을 벗어난 대상 {len(bad)}개 중 상위 {self._cfg.top_n}개만 표시"
             )
-        if saturated:
+        for top_bound, count in saturated.items():
             col.limit(
                 f"{check.key}: p95가 히스토그램 최대 유한 구간 경계"
-                f"({fmt_value(top_bound or 0.0, 'seconds')})와 같은 대상 {saturated}개는 "
+                f"({fmt_value(top_bound, 'seconds')})와 같은 대상 {count}개는 "
                 "실제 값이 그보다 클 수 있음"
             )
         if bad or not is_fresh(result, self._cfg):
@@ -541,19 +566,24 @@ class DbAgent:
             col.limit(f"{key}: 분석 구간 또는 기준 구간 결과가 없어 비교할 수 없음")
             return
         before = {row_key(labels): v for labels, v in value_rows(base)}
-        first = _first_bucket(await self._tool.bucket_bounds(key, targets, ctx.time_range.end))
-        coarse = first is not None and first >= self._cfg.min_latency_increase_seconds
+        bounds = await self._bounds_lookup(key, targets, ctx)
         compared = 0
         skipped = 0
-        interpolated = 0
+        interpolated: dict[float, int] = {}
         increased: list[tuple[float, float, dict[str, str]]] = []
         for labels, value in value_rows(cur):
             prev = before.get(row_key(labels))
             if prev is None or prev <= 0:
                 skipped += 1
                 continue
-            if coarse and first is not None and max(value, prev) <= first * (1 + 1e-9):
-                interpolated += 1  # 두 값 모두 첫 구간 안의 보간값이라 변화를 알 수 없음
+            first = _first_bucket(bounds(labels))
+            if (
+                first is not None
+                and first >= self._cfg.min_latency_increase_seconds
+                and max(value, prev) <= first * (1 + 1e-9)
+            ):
+                # 두 값 모두 넓은 첫 구간 안의 보간값이라 변화를 알 수 없음
+                interpolated[first] = interpolated.get(first, 0) + 1
                 continue
             compared += 1
             if (
@@ -565,11 +595,11 @@ class DbAgent:
         ids = (cur.evidence_id, base.evidence_id)
         if skipped:
             col.limit(f"{key}: 기준 구간 값이 없거나 0인 대상 {skipped}개는 비교하지 않음")
-        if interpolated:
+        for first, count in interpolated.items():
             col.limit(
                 f"{key}: 두 구간 값이 모두 히스토그램 첫 구간"
-                f"(0~{fmt_value(first or 0.0, 'seconds')}) 안의 보간값인 대상 "
-                f"{interpolated}개는 비교하지 않음"
+                f"(0~{fmt_value(first, 'seconds')}) 안의 보간값인 대상 "
+                f"{count}개는 비교하지 않음"
             )
         for prev, value, labels in increased[: self._cfg.top_n]:
             target = db_entity(labels)
@@ -602,6 +632,10 @@ class DbAgent:
                     basis=JudgementBasis.BASELINE,
                 )
             )
+
+
+BoundsFor = Callable[[Mapping[str, str]], "tuple[float, ...] | None"]
+"""결과 행 라벨 → 그 행의 히스토그램 유한 버킷 경계."""
 
 
 def _first_bucket(bounds: tuple[float, ...] | None) -> float | None:

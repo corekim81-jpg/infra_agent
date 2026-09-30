@@ -116,6 +116,9 @@ class CatalogQueryTool:
         self._freshness_cache: dict[str, float | None] = {}
         self._coverage_cache: dict[tuple[str, str], int | None] = {}
         self._bounds_cache: dict[tuple[str, str], tuple[float, ...] | None] = {}
+        self._group_bounds_cache: dict[
+            tuple[str, str, str], dict[str, tuple[float, ...]] | None
+        ] = {}
 
     def item(self, key: str) -> CatalogItem:
         item = self._catalog.items.get(key)
@@ -387,6 +390,44 @@ class CatalogQueryTool:
                         bounds.add(value)
                 self._bounds_cache[cache_key] = tuple(sorted(bounds)) if bounds else None
         return self._bounds_cache[cache_key]
+
+    async def bucket_bounds_by(
+        self, key: str, targets: Mapping[TargetKind, str], at: datetime, label: str
+    ) -> dict[str, tuple[float, ...]] | None:
+        """`label` 값(예: 서비스)별 유한 버킷 경계(오름차순). 확인하지 못하면 None.
+
+        같은 지표 이름이라도 보내는 서비스(계측 라이브러리)마다 버킷 경계가 다를 수 있어,
+        모든 시계열의 경계를 합치면 한 서비스의 넓은 첫 구간이 다른 서비스의 좁은 경계에 가려집니다.
+        """
+        item = self.item(key)
+        metric = next((m for m in item.requires_metrics if m.endswith("_bucket")), None)
+        if metric is None:
+            return None
+        selector, unsupported = item.selector_for(targets)
+        if unsupported:
+            return None
+        cache_key = (metric, selector, label)
+        if cache_key not in self._group_bounds_cache:
+            if not self._budget.take():
+                return None
+            expr = f"count by (le, {label}) ({metric}{{{selector}}})"
+            try:
+                result = await asyncio.wait_for(self._prom.query(expr, at), timeout=self._timeout)
+            except (TimeoutError, DataSourceError):
+                self._group_bounds_cache[cache_key] = None
+            else:
+                groups: dict[str, set[float]] = {}
+                for s in result.samples:
+                    try:
+                        value = float(s.labels.get("le", ""))
+                    except ValueError:
+                        continue
+                    if math.isfinite(value):
+                        groups.setdefault(s.labels.get(label, ""), set()).add(value)
+                self._group_bounds_cache[cache_key] = {
+                    g: tuple(sorted(b)) for g, b in groups.items()
+                } or None
+        return self._group_bounds_cache[cache_key]
 
     async def coverage(
         self, key: str, targets: Mapping[TargetKind, str], at: datetime

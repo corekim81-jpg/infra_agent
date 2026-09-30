@@ -13,8 +13,11 @@ import pytest
 from infra_agent.answer.render import render_text
 from infra_agent.catalog import load_catalog
 from infra_agent.config import Settings, load_settings
+from infra_agent.datasources import PrometheusClient
 from infra_agent.orchestration.runner import answer_question
 from infra_agent.schemas import AgentName, AgentStatus
+from infra_agent.timeutil import utc_now
+from infra_agent.tools import CatalogQueryTool, ToolBudget
 
 pytestmark = pytest.mark.live
 
@@ -60,3 +63,21 @@ async def test_service_then_db(settings: Settings) -> None:
     assert service.status in (AgentStatus.SUCCESS, AgentStatus.PARTIAL), service.errors
     assert db.status is AgentStatus.SUCCESS, [e.message for e in db.errors]
     print("\n" + render_text(bundle))
+
+
+async def test_db_latency_bucket_bounds(settings: Settings) -> None:
+    """DB 지연 히스토그램의 서비스별 버킷 경계를 출력합니다 (첫 구간 보간값 판단의 근거 확인용)."""
+    assert settings.catalog.path is not None
+    catalog = load_catalog(settings.catalog.path)
+    async with PrometheusClient.from_config(settings.datasources.prometheus) as prom:
+        tool = CatalogQueryTool(
+            catalog, prom, agent=AgentName.DB, budget=ToolBudget(10), timeout_seconds=20
+        )
+        for key, label in (
+            ("db.client_operation_latency_p95", "service_name"),
+            ("db.span_latency_p95", "service"),
+        ):
+            groups = await tool.bucket_bounds_by(key, {}, utc_now(), label)
+            assert groups is not None, key
+            for name, bounds in sorted(groups.items()):
+                print(f"\n{key} [{name}] 경계 {len(bounds)}개: {bounds[:4]} ... {bounds[-1]}")
