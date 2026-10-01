@@ -24,6 +24,8 @@ MAX_RANGE = timedelta(days=7)
 """개발 환경 Prometheus 보존 기간(1w) 기준 최대 조회 구간."""
 
 IMPLEMENTED_DOMAINS = frozenset({"server", "kubernetes", "service", "db", "network"})
+COMPARE_DEFAULT_DOMAINS = ("server", "service", "db")
+"""분야를 특정하지 않은 비교·증가 질문의 기본 분야 (직전 구간 대비 증가를 판정하는 분야)."""
 
 DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "server": (
@@ -288,7 +290,16 @@ def finalize(
         final_targets.update(target_overrides)
 
     final_domains = {d for d in domains if d in KNOWN_DOMAINS}
-    if not final_domains:
+    if not final_domains and intent in (Intent.COMPARE, Intent.ANOMALY):
+        # 분야를 특정하지 않은 비교·증가 질문은 직전 구간 비교가 가능한 분야를 함께 봅니다
+        # (architecture.md 4.2절). 실행 순서는 실행 계획을 따름(Server ∥ (Service → DB)).
+        final_domains = set(COMPARE_DEFAULT_DOMAINS)
+        notes.append(
+            "질문 분야를 특정하지 못해 직전 구간 비교가 가능한 분야(서버 자원·서비스·DB)로 해석 "
+            "(Kubernetes 상태·네트워크는 확인하지 않음)"
+        )
+    elif not final_domains:
+        # 단순 상태 질문은 넓은 분석으로 확장하지 않고 서버 자원만 봅니다.
         final_domains = {"server"}
         notes.append("질문 분야를 특정하지 못해 서버(노드·Pod·컨테이너) 자원 상태로 해석")
     return Interpretation(

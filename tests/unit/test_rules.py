@@ -33,8 +33,19 @@ def test_compare_question() -> None:
     r = interpret("직전 1시간과 비교해서 현재 상태가 어떻게 달라졌어?", NOW, D30)
     assert r.intent is Intent.COMPARE
     assert r.time_range.duration == timedelta(hours=1)
-    assert r.domains == {"server"}  # 분야 키워드 없음 → 서버로 가정
-    assert any("분야" in a for a in r.assumptions)
+    # 분야 키워드 없는 비교 질문 → 직전 구간 비교가 가능한 분야 (architecture.md 4.2절)
+    assert r.domains == {"server", "service", "db"}
+    assert any(
+        "직전 구간 비교가 가능한 분야" in a and "Kubernetes 상태·네트워크는 확인하지 않음" in a
+        for a in r.assumptions
+    )
+    # 분야 키워드 없는 증가(anomaly) 질문도 같음
+    spike = interpret("최근 10분 동안 급증한 게 있어?", NOW, D30)
+    assert spike.intent is Intent.ANOMALY and spike.domains == {"server", "service", "db"}
+    # 단순 상태 질문은 넓은 분석으로 확장하지 않음
+    status = interpret("현재 상태가 어때?", NOW, D30)
+    assert status.intent is Intent.STATUS and status.domains == {"server"}
+    assert any("서버(노드·Pod·컨테이너) 자원 상태로 해석" in a for a in status.assumptions)
 
 
 def test_targets_extracted_only_for_real_names() -> None:

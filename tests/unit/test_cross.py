@@ -493,3 +493,17 @@ def test_live_like_service_without_db_calls() -> None:
         "DB 호출 span에 이 서비스의 DB 호출이 없어 DB 이상과 연결하지 않음 — DB·캐시. "
         "이 결과만으로는 원인 분야를 가리지 못함"
     )
+
+
+def test_summary_names_domains_without_results() -> None:
+    """한 분야에만 판단 결과가 있으면, 결과가 없는 분야를 요약과 확인하지 못한 영역에 밝힘."""
+    interp = interpret(
+        "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘", NOW, timedelta(minutes=30)
+    )
+    empty_db = _result(AgentName.DB, (), ())
+    answer = synthesize("r3", interp, [SERVICE, NETWORK_OK, empty_db])
+    assert "(DB·캐시 분야는 판단에 사용할 결과가 없어 확인하지 못했습니다.)" in answer.summary
+    assert (
+        "DB·캐시: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)"
+        in answer.unverified_areas
+    )

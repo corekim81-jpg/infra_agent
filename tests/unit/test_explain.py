@@ -155,6 +155,9 @@ async def test_not_needed_without_anomalies() -> None:
     cause = await with_explanation(info, _explainer(fake), why)
     assert cause.limitations == (NO_ANOMALY_NO_HYPOTHESIS,) and not fake.requests
     assert (await with_explanation(info, None, why)).limitations == ()  # 모델 미설정
+    # 판단 결과(사실)가 하나도 없으면 "이상 징후 없음"이라고 하지 않음 (데이터 부재 ≠ 정상)
+    blank = RESULT.model_copy(update={"findings": ()})
+    assert (await with_explanation(blank, _explainer(fake), why)).limitations == ()
 
 
 def test_duplicate_check() -> None:

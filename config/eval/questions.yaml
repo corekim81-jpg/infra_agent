@@ -1,0 +1,64 @@
+# 대표 질문 평가 세트 (README "대표 질문" 7개).
+# 기대값은 결정적으로 확인할 수 있는 것만 적습니다. 평가 기준은 docs/evaluation.md를 봅니다.
+# 실제 데이터 값(서비스 이름, 수치)은 적지 않습니다(개발 환경 데이터는 시점마다 달라짐).
+version: 1
+questions:
+  - id: q1_server_status
+    question: "현재 서버 상태가 어때?"
+    expect:
+      agents: [server]
+      intents: [status]
+      baseline: false
+      sources: [prometheus]
+
+  - id: q2_memory_spike
+    question: "최근 30분 동안 메모리 사용량이 급증한 서버가 있어?"
+    expect:
+      agents: [server]
+      intents: [anomaly, compare]
+      range_minutes: 30
+      baseline: true
+      sources: [prometheus]
+
+  - id: q3_network_or_db
+    question: "서비스 응답이 느려진 원인이 네트워크인지 DB인지 분석해 줘."
+    expect:
+      agents: [service, network, db]
+      after: {network: service, db: service}
+      intents: [anomaly, compare]
+      baseline: true
+      sources: [prometheus]
+      cross_check: true
+
+  - id: q4_db_pool
+    question: "DB 커넥션 풀이 부족한 징후가 있어?"
+    expect:
+      agents: [db]
+      intents: [status, anomaly]
+      sources: [prometheus]
+
+  - id: q5_k8s_pods
+    question: "재시작이 반복되거나 Pending 상태인 Pod를 확인해 줘."
+    expect:
+      agents: [kubernetes]
+      intents: [status, anomaly]
+      sources: [prometheus]
+
+  - id: q6_logs_traces
+    question: "오류가 증가한 시간대의 로그와 트레이스를 함께 분석해 줘."
+    expect:
+      agents: [service]
+      intents: [anomaly, compare]
+      sources: [prometheus, loki, tempo]
+    note: Loki·Tempo가 설정에서 켜져 있어야 함. 오류 서비스가 없으면 로그·트레이스 개요만 조회함
+
+  - id: q7_compare_30m
+    question: "직전 30분과 비교해서 현재 상태가 어떻게 달라졌어?"
+    expect:
+      agents: [server, service, db]
+      after: {db: service}
+      intents: [compare]
+      range_minutes: 30
+      baseline: true
+      sources: [prometheus]
+    note: 분야를 특정하지 않은 비교 질문은 직전 구간 비교가 가능한 분야를 실행 (Server ∥ (Service → DB), architecture.md 4.2절)

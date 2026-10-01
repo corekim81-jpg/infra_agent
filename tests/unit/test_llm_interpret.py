@@ -77,3 +77,16 @@ async def test_fallback_to_rules_on_error_or_bad_output() -> None:
     r2 = await interpret_with_model(q, bad, NOW, D30)
     assert r2.method_note == "모델 해석 실패: 모델 출력 형식 오류"
     assert not any("모델" in a for a in r2.assumptions)
+
+
+async def test_model_empty_domains_use_compare_default() -> None:
+    """모델이 분야를 비워 두면 규칙 기반과 같은 기본 분야를 씀 (비교 → 서버·서비스·DB)."""
+    compare = FakeLLM({PURPOSE: _answer(intent="compare", duration_minutes=30, domains=[])})
+    r = await interpret_with_model(
+        "직전 30분과 비교해서 현재 상태가 어떻게 달라졌어?", compare, NOW, D30
+    )
+    assert r.method == "model" and r.domains == {"server", "service", "db"}
+    assert any("직전 구간 비교가 가능한 분야" in a for a in r.assumptions)
+    status = FakeLLM({PURPOSE: _answer(intent="status", domains=[])})
+    s = await interpret_with_model("현재 상태가 어때?", status, NOW, D30)
+    assert s.domains == {"server"}

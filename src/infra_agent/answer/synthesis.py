@@ -99,10 +99,24 @@ def _summary(
             text = "판단에 사용할 수 있는 결과가 없어 이상 여부를 판단하지 못했습니다."
     if partial:
         text += " 일부 조회를 완료하지 못해 결과가 불완전합니다."
+    blank = _no_fact_domains(results)
+    if blank and facts:
+        # 다른 분야의 판정만으로 "이상 없음"처럼 읽히지 않게, 판단 결과가 없는 분야를 밝힙니다.
+        text += f" ({', '.join(blank)} 분야는 판단에 사용할 결과가 없어 확인하지 못했습니다.)"
     if interp.unsupported_domains:
         names = ", ".join(DOMAIN_NAMES.get(d, d) for d in sorted(interp.unsupported_domains))
         text += f" ({names} 분야는 아직 분석하지 않았습니다.)"
     return text
+
+
+def _no_fact_domains(results: Sequence[AgentResult]) -> list[str]:
+    """실행은 됐지만(성공·부분 성공) 판단 결과(사실)가 하나도 없는 분야."""
+    return [
+        DOMAIN_NAMES.get(r.agent.value, r.agent.value)
+        for r in results
+        if r.status in (AgentStatus.SUCCESS, AgentStatus.PARTIAL)
+        and not any(f.kind is FindingKind.FACT for f in r.findings)
+    ]
 
 
 MAX_SHOWN_SAMPLES = 3
@@ -176,6 +190,10 @@ def synthesize(
             unverified.append(f"{r.agent.value} 에이전트: 실패로 확인하지 못함{reason}")
         elif r.status is AgentStatus.SKIPPED:
             unverified.append(f"{r.agent.value} 에이전트: 실행하지 않음{reason}")
+    unverified.extend(
+        f"{name}: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)"
+        for name in _no_fact_domains(results)
+    )
     next_checks = list(dict.fromkeys(x for r in results for x in r.next_checks))
     if any(r.agent is AgentName.KUBERNETES and r.status is AgentStatus.SUCCESS for r in results):
         # 같은 요청에서 Kubernetes Agent가 이미 확인했으므로 Server의 확인 제안은 뺍니다.
