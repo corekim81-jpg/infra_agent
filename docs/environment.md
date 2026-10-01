@@ -222,7 +222,7 @@ $env:INFRA_AGENT_LIVE_TESTS = "1"; python -m pytest -m live
 
 ### 4.4 otel-demo 카탈로그와 점검
 
-> **구현됨 (#9, DB 항목 보완 #25):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 56개(Server 13, Kubernetes 11, Network 8, DB·캐시 17, Service 7)와 Loki 항목 3개. `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지는 `discovered`입니다.
+> **구현됨 (#9, DB 항목 보완 #25, Network 워크로드 흐름 #29):** [`config/catalog/otel-demo.yaml`](../config/catalog/otel-demo.yaml) — Prometheus 항목 58개(Server 13, Kubernetes 11, Network 10, DB·캐시 17, Service 7)와 Loki 항목 3개. `verified` 2개(`node.cpu_usage`, `container.cpu_usage`: cores 단위 교차 검증 통과), 나머지는 `discovered`입니다.
 > #25에서 DB Agent용으로 바꾼 항목: 커넥션 풀 사용률 2개를 사용 중 연결 기준(상태 값 idle 제외)으로 변경, `db.pool_wait_rate`·`cache.valkey_evictions_rejections`를 구간 증가 수 항목(`db.pool_waits_increase`, `cache.valkey_evicted_increase`, `cache.valkey_rejected_increase`)으로 교체, `db.span_latency_p95` 추가(Service 항목과 같은 조회식), 풀 사용률 분모 확인용 `db.pool_max_open_product_catalog` 추가.
 > #27에서 Network Agent용으로 발생 수 항목 5개를 구간 증가량으로 바꿨습니다(`network.drops_increase`, `network.hubble_lost_events_increase`, `network.node_interface_errors_increase`, `network.pod_network_errors_increase`, `network.container_packet_drops_increase`). 로컬 Prometheus 3.5(빈 데이터)에서 전체 Prometheus 항목 조회식 169건을 실행해 문법 오류가 없음을 확인했습니다.
 

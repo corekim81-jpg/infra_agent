@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from infra_agent.agents.server import LIMIT_NEAR_CHECK
+from infra_agent.answer.cross import DEFAULT_STALE_SECONDS, cross_check
 from infra_agent.llm.policy import sample_rows
 from infra_agent.orchestration.rules import Interpretation
 from infra_agent.schemas import (
@@ -130,7 +131,10 @@ def sample_texts(e: ToolResult) -> list[str]:
 
 
 def synthesize(
-    request_id: str, interp: Interpretation, results: Sequence[AgentResult]
+    request_id: str,
+    interp: Interpretation,
+    results: Sequence[AgentResult],
+    stale_after_seconds: float = DEFAULT_STALE_SECONDS,
 ) -> FinalAnswer:
     change_first = _compares(interp, results)
     facts = sorted(
@@ -176,9 +180,14 @@ def synthesize(
     if any(r.agent is AgentName.KUBERNETES and r.status is AgentStatus.SUCCESS for r in results):
         # 같은 요청에서 Kubernetes Agent가 이미 확인했으므로 Server의 확인 제안은 뺍니다.
         next_checks = [x for x in next_checks if x != LIMIT_NEAR_CHECK]
+    cross = cross_check(results, stale_after_seconds)
+    limitations.extend(x for x in cross.limitations if x not in limitations)
+    summary = _summary(facts, results, interp)
+    if cross.summary:
+        summary += " " + cross.summary
     return FinalAnswer(
         request_id=request_id,
-        summary=_summary(facts, results, interp),
+        summary=summary,
         time_range=interp.time_range,
         facts=tuple(facts),
         hypotheses=tuple(hypotheses),
@@ -186,4 +195,6 @@ def synthesize(
         limitations=tuple(limitations),
         unverified_areas=tuple(unverified),
         next_checks=tuple(next_checks),
+        cross_checks=cross.lines,
+        correlations=cross.correlations,
     )

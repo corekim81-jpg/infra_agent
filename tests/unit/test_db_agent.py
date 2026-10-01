@@ -360,6 +360,13 @@ async def test_slow_service_question_runs_service_then_network_and_db() -> None:
     ]
     assert [run.depends_on for run in bundle.runs] == [(), ("service-1",), ("service-1",)]
     assert bundle.answer.unverified_areas == ()
+    # 데이터가 없으면 교차 확인은 "이상 없음"이 아니라 판단 불가로 답함
+    text = render_text(bundle)
+    assert (
+        "[분야 간 교차 확인]\n- 서비스: 오류율·응답 지연 판정 결과가 없어 이상 대상을 정하지 못함"
+        in text
+    )
+    assert "판정 결과가 없어 분야 간 연결을 판단하지 않았습니다." in bundle.answer.summary
 
 
 async def test_first_bucket_interpolation_is_not_judged() -> None:

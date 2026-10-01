@@ -208,6 +208,13 @@ class Finding(_Model):
     evidence_ids: tuple[str, ...] = Field(min_length=1)
     basis: JudgementBasis
     confidence: Confidence | None = None
+    observed_at: datetime | None = None
+    """시점이 있는 사실(예: 오류율·지연 최고 시점)의 관측 시각. 분야 간 확인의 시간 기준."""
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
 
     @model_validator(mode="after")
     def _rules(self) -> Self:
@@ -294,6 +301,12 @@ class FinalAnswer(_Model):
     limitations: tuple[str, ...] = ()
     unverified_areas: tuple[str, ...] = ()
     next_checks: tuple[str, ...] = ()
+    cross_checks: tuple[str, ...] = ()
+    """분야 간 교차 확인 (Coordinator 코드 판정).
+
+    연결된 이상, 연결되지 않은 이상, 확인하지 못한 분야를 줄 단위로 적습니다."""
+    correlations: tuple[Finding, ...] = ()
+    """분야 간 동시 발생으로 연결한 원인 후보 (hypothesis, basis=correlation)."""
 
     @model_validator(mode="after")
     def _kinds(self) -> Self:
@@ -301,4 +314,9 @@ class FinalAnswer(_Model):
             raise ValueError("facts에는 fact만 포함할 수 있습니다")
         if any(f.kind is not FindingKind.HYPOTHESIS for f in self.hypotheses):
             raise ValueError("hypotheses에는 hypothesis만 포함할 수 있습니다")
+        if any(
+            f.kind is not FindingKind.HYPOTHESIS or f.basis is not JudgementBasis.CORRELATION
+            for f in self.correlations
+        ):
+            raise ValueError("correlations에는 basis=correlation인 hypothesis만 포함할 수 있습니다")
         return self

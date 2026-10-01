@@ -69,9 +69,11 @@ def test_all_items_render(catalog: Catalog, selector: str) -> None:
 def test_hubble_targets_do_not_use_collector_pod_labels(catalog: Catalog) -> None:
     for key, item in catalog.items.items():
         if any(m.startswith("hubble_") for m in item.requires_metrics):
+            # 대상 필터는 트래픽 라벨(source_*·destination_*)만 사용. 나가는 흐름 항목만 출발 기준
+            source_side = key == "network.workload_egress_by_verdict"
             assert item.target_labels.get(TargetKind.NAMESPACE) in (
                 None,
-                "destination_namespace",
+                "source_namespace" if source_side else "destination_namespace",
             ), key
             assert TargetKind.POD not in item.target_labels, key
 

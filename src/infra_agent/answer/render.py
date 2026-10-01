@@ -119,6 +119,17 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append("[확인된 사실]")
         for f in normals:
             lines.append(f"- {f.statement}")
+    if answer.cross_checks:
+        lines.append("")
+        lines.append("[분야 간 교차 확인]")
+        lines.extend(f"- {x}" for x in answer.cross_checks)
+    if answer.correlations:
+        lines.append("")
+        lines.append("[원인 후보 (추정, 분야 간 동시 발생)]")
+        for f in answer.correlations:
+            conf = f.confidence.value if f.confidence else "-"
+            refs = ", ".join(f.evidence_ids)
+            lines.append(f"- {f.statement} (신뢰도 {conf}, 근거 {refs})")
     if answer.hypotheses:
         lines.append("")
         lines.append("[원인 후보 (추정, 모델 해석)]")
