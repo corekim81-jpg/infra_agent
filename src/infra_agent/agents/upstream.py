@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 from infra_agent.schemas import (
     AgentName,
@@ -173,3 +174,21 @@ def service_db_calls(
     if not found:
         return None
     return {k: frozenset(v) for k, v in calls.items()}
+
+
+def service_peaks(results: Iterable[AgentResult]) -> dict[str, datetime]:
+    """Service Agent가 찾은 서비스별 이상 최고 시점(오류율·응답 지연 시계열 기준).
+
+    Service Agent는 이상 서비스의 상세 확인 때 최고 시점을 `observed_at`이 있는 사실로 남깁니다.
+    같은 서비스에 여러 시점이 있으면 먼저 기록된 시점(오류율 → 응답 지연 순)을 씁니다.
+    """
+    peaks: dict[str, datetime] = {}
+    for result in _usable(results, _SERVICE_ONLY):
+        for finding in result.findings:
+            if finding.kind is not FindingKind.FACT or finding.observed_at is None:
+                continue
+            for target in finding.targets:
+                name = issue_service(target)
+                if name and name not in peaks:
+                    peaks[name] = finding.observed_at
+    return peaks

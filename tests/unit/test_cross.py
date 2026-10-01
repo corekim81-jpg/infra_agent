@@ -444,3 +444,52 @@ def test_synthesis_includes_cross_check() -> None:
     assert CROSS_NOTE in answer.limitations
     single = synthesize("r2", interp, [DB])
     assert single.cross_checks == () and CROSS_NOTE not in single.limitations
+
+
+def test_live_like_service_without_db_calls() -> None:
+    """live(2026-10-01) 형태: checkout 지연 증가, 네트워크 정상, checkout은 DB 호출 없음."""
+    service = _result(
+        AgentName.SERVICE,
+        (
+            _fact(
+                "서비스 응답 지연 p95 증가: checkout 평균 0.031초 → 1.62초",
+                "service.latency_p95@window_avg",
+                TargetRef(kind=TargetKind.SERVICE, name="checkout"),
+            ),
+        ),
+        (_ev("service.latency_p95@window_avg"), DB_SPANS),
+    )
+    network = _result(
+        AgentName.NETWORK,
+        (
+            _fact(
+                "Service 이상 대상 checkout(응답 지연)의 네트워크: 드롭·오류 판정 0.0%",
+                "network.workload_ingress_by_verdict@current:checkout",
+                TargetRef(kind=TargetKind.SERVICE, name="checkout", labels={"service": "checkout"}),
+                severity=Severity.INFO,
+            ),
+        ),
+        (_ev("network.workload_ingress_by_verdict@current:checkout"),),
+    )
+    db = _result(
+        AgentName.DB,
+        (
+            _fact(
+                "PostgreSQL 데드락 (최근 30분): 발생 없음",
+                "db.pg_deadlocks_increase@window",
+                severity=Severity.INFO,
+            ),
+        ),
+        (_ev("db.pg_deadlocks_increase@window"),),
+    )
+    cross = cross_check([service, network, db])
+    # "DB 호출 없음"도 서비스 단위 판단이므로 판단 불가로 분류하지 않음
+    assert cross.summary == (
+        "분야 간 교차 확인: 서비스 이상 대상 1개 중 네트워크 이상과 연결된 대상 0개, "
+        "DB·캐시 이상과 연결된 대상 0개 (같은 구간 동시 발생 기준, 인과 미확인)."
+    )
+    assert cross.lines[-1] == (
+        "checkout(응답 지연): 이 서비스 관련 결과에서 기준을 넘는 이상 없음 — 네트워크; "
+        "DB 호출 span에 이 서비스의 DB 호출이 없어 DB 이상과 연결하지 않음 — DB·캐시. "
+        "이 결과만으로는 원인 분야를 가리지 못함"
+    )

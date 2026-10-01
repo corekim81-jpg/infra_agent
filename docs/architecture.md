@@ -113,9 +113,10 @@ flowchart TD
 - DNS 질의량 합계가 0이면 사실로 표시하지 않고, Hubble DNS 지표는 DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계하므로 실제 질의가 없다는 뜻이 아닐 수 있음을 한계에 적음
 - 네임스페이스·워크로드 필터는 Hubble 항목에서 도착 기준이므로, 필터가 있으면 한계에 적고 판정 문장에 "(도착 기준)"을 붙임. Hubble 이벤트 유실은 관측 품질 점검이라 대상 필터 없이 전체를 봄
 - 흐름이 적어 비율을 판정하지 않은 네임스페이스 쌍은 개수(드롭·오류 판정이 있는 쌍 수 포함)를 한계에 적음. 결과에 TCP 플래그 값이 없으면 RST 여부를 판단하지 않음
-- 선행 Service 결과에 이상 서비스가 있으면 이름이 같은 Hubble 워크로드를 집중 확인(#29, 심각한 대상부터 `top_n`개): 나가는·들어오는 흐름 판정 비율(현재 5분, `network.workload_egress_by_verdict`·`network.workload_ingress_by_verdict`)과 구간 내 드롭(비장애성 사유 제외)
+- 선행 Service 결과에 이상 서비스가 있으면 이름이 같은 Hubble 워크로드를 집중 확인(#29, 심각한 대상부터 `top_n`개): 나가는·들어오는 흐름 판정 비율(Service가 찾은 그 서비스의 이상 최고 시점까지 5분, 최고 시점을 모르거나 구간 끝 1분 안이면 현재 5분. `network.workload_egress_by_verdict`·`network.workload_ingress_by_verdict`)과 구간 내 드롭(비장애성 사유 제외)
   - 워크로드 쌍 집계는 시계열이 매우 많아(tcp_flags 약 1.4만) 방향별로 한쪽 워크로드(네임스페이스 포함)만 집계. 같은 이름이 여러 네임스페이스에 있으면 합쳐 계산하고 한계에 적음
   - 경고는 흐름 판정 비율로만 정함(구간 내 드롭은 드롭 판정에서 이미 경고로 셈)
+  - 최고 시점 조회는 `CatalogQueryTool.query(at=…, tag=서비스)`로 평가 시각을 지정하고, 근거 ID는 `<key>@current:<서비스>`, 근거 구간은 평가 시각까지 5분으로 기록. 최고 시점은 Service 최고 시점 사실의 `Finding.observed_at`에서 읽음
   - 같은 이름의 워크로드가 없으면 "연결하지 못함"으로 한계에 적음. 방향별로 결과가 없거나 라벨이 없거나 조회에 실패하면 "흐름 없음"이라고 하지 않고 그 사유를 표시. 최신성을 확인하지 못하면 판단하지 않음
 - Network·DB는 선행 결과 없이도 분석할 수 있으므로(`plan.OPTIONAL_UPSTREAM`), Service가 실패해도 건너뛰지 않고 실행
 - 질문 해석에 등록되지 않은 에이전트가 있으면 실행 계획의 `unavailable`을 "확인하지 못한 영역"에 반영(`runner`)
@@ -151,6 +152,7 @@ flowchart TD
 - Service가 실패했거나 오류율·응답 지연 판정 결과가 없으면 "이상 대상 없음"이 아니라 판단하지 못했다고 표시. Service가 부분 성공이면 빠진 대상이 있을 수 있다고 적음
 - DB 호출 종류는 Service·DB Agent의 DB 호출 span 결과(결과가 있고 최신인 것만)에서 읽고, 없으면 간접 연결을 확인하지 않았다고 한계에 적음(빈 결과·오래된 결과로 "DB 호출 없음"이라고 하지 않음)
 - 원인 후보의 심각도는 서비스 이상과 연결된 이상 중 높은 쪽
+- 시간 기준은 분야마다 다름(Network 집중 확인은 서비스 이상 최고 시점, DB·Kubernetes·서버는 현재 값 또는 분석 구간 집계)이며 한계에 적음. "DB 호출 없음"도 서비스 단위 판단으로 요약의 분야별 연결 수에 포함
 - 요약 끝에 서비스 이상 대상 수와 분야별로 연결된 대상 수를 붙임
 
 범위 제한:
@@ -259,6 +261,7 @@ Finding
   evidence_ids: [str]      # 1개 이상 필수
   basis: threshold | baseline | state | correlation
   confidence: low|medium|high   # hypothesis에 필수, fact에는 금지
+  observed_at: datetime | null  # 시점이 있는 사실(오류율·지연 최고 시점 등)의 관측 시각 (#29)
   # 규칙: basis=correlation은 fact가 될 수 없음
 
 AgentResult

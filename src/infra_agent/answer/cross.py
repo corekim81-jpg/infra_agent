@@ -69,7 +69,8 @@ DB_SYSTEM_PREFIXES: tuple[tuple[str, frozenset[str]], ...] = (
 CROSS_NOTE = (
     "분야 간 교차 확인은 같은 분석 구간 안에서 함께 관측된 이상을 이름 일치(서비스·워크로드·"
     "컨테이너 이름)와 DB 호출 관계(DB 호출 span의 DB 종류)로 연결한 것이며, 인과를 확인한 것이 "
-    "아닙니다."
+    "아닙니다. 시간 기준은 분야마다 다릅니다: Network 집중 확인은 서비스 이상 최고 시점, "
+    "DB·Kubernetes·서버는 현재 값 또는 분석 구간 집계."
 )
 DEFAULT_STALE_SECONDS = 300.0
 """DB 호출 span 결과 최신성 기준 기본값 (`analysis.stale_after_seconds` 기본값과 같음)."""
@@ -293,7 +294,7 @@ def cross_check(
             return sum(1 for g in groups.values() if any(t.startswith(domain) for t in g[kind]))
 
         # 서비스 단위로 연결 여부를 판단할 수 있었던 분야만 연결 수를 셉니다.
-        judged = [d for d in checked if has(d, LINKED) or has(d, CLEAR)]
+        judged = [d for d in checked if has(d, LINKED) or has(d, CLEAR) or has(d, NO_DB_CALL)]
         counts = [f"{d} 이상과 연결된 대상 {has(d, LINKED)}개" for d in judged]
         summary = f"분야 간 교차 확인: 서비스 이상 대상 {len(issues)}개 중 " + (
             ", ".join(counts) if counts else "연결을 판단한 분야 없음"

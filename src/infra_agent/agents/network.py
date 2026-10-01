@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from infra_agent.agents.base import context_targets
 from infra_agent.agents.common import (
@@ -43,7 +44,7 @@ from infra_agent.agents.common import (
 )
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.formatting import count_text, fmt_value, window_text
-from infra_agent.agents.upstream import ServiceIssue, service_issues
+from infra_agent.agents.upstream import ServiceIssue, service_issues, service_peaks
 from infra_agent.config.settings import AnalysisConfig
 from infra_agent.schemas import (
     AgentName,
@@ -60,6 +61,7 @@ from infra_agent.schemas import (
     ToolStatus,
 )
 from infra_agent.tools import CatalogQueryTool, QueryMode, value_rows
+from infra_agent.units import fmt_time
 
 SCOPE_NOTE = (
     "Network 분석은 Cilium/Hubble·kubeletstats·cAdvisor 지표 기준입니다. DNS 응답 코드와 "
@@ -85,9 +87,12 @@ HUBBLE_KEYS = frozenset(
 UNKNOWN_PEER = "외부·미확인"
 FOCUS_NOTE = (
     "Service 이상 대상은 이름이 같은 Hubble 워크로드(출발 또는 도착)로 연결해 확인함. 서비스 "
-    "이름과 워크로드 이름이 다르면 연결되지 않음. 흐름 판정 비율은 드롭 사유를 구분하지 않음"
-    "(비장애성 사유 포함)"
+    "이름과 워크로드 이름이 다르면 연결되지 않음. 흐름은 Service가 찾은 이상 최고 시점까지 5분"
+    "(최고 시점을 모르면 현재 5분), 드롭은 분석 구간 전체 기준. 흐름 판정 비율은 드롭 사유를 "
+    "구분하지 않음(비장애성 사유 포함)"
 )
+PEAK_CURRENT_MARGIN = timedelta(minutes=1)
+"""최고 시점이 분석 구간 끝에서 이 시간 안이면 현재 5분 조회로 대신합니다."""
 FOCUS_FILTER_NOTE = (
     "대상 필터가 있으면 Service 이상 대상의 구간 내 드롭은 도착 기준 결과에서만 찾으므로, 그 "
     "대상에서 다른 네임스페이스로 나가는 드롭은 빠질 수 있음"
@@ -212,7 +217,8 @@ class NetworkAgent:
         await self._verdicts(ctx, targets, col)
         issues = service_issues((upstream or {}).values())
         if issues:
-            await self._service_focus(ctx, targets, issues, col)
+            peaks = service_peaks((upstream or {}).values())
+            await self._service_focus(ctx, targets, issues, peaks, col)
         await self._tcp_rst(ctx, targets, col)
         await self._dns(ctx, targets, col)
         result = finish(task, self.name, col)
@@ -227,17 +233,21 @@ class NetworkAgent:
         mode: QueryMode,
         targets: Mapping[TargetKind, str],
         col: Collector,
+        at: datetime | None = None,
+        tag: str | None = None,
     ) -> tuple[ToolResult, list[tuple[dict[str, str], float]]] | None:
         """조회해 근거와 결과 행을 돌려줍니다.
 
         조회하지 못했거나 결과가 없으면 사유를 한계에 적고 None을 돌려줍니다(정상으로 보지 않음).
         """
-        result = await fetch_evidence(self._tool, self._cfg, key, ctx, mode, targets, col)
+        result = await fetch_evidence(
+            self._tool, self._cfg, key, ctx, mode, targets, col, at=at, tag=tag
+        )
         if result is None:
             return None
         rows = value_rows(result)
         if result.status is ToolStatus.EMPTY or not rows:
-            await self._no_data(key, ctx, targets, col)
+            await self._no_data(f"{key}:{tag}" if tag else key, ctx, targets, col)
             return None
         return result, rows
 
@@ -456,9 +466,14 @@ class NetworkAgent:
         ctx: AnalysisContext,
         targets: Mapping[TargetKind, str],
         col: Collector,
+        at: datetime | None = None,
+        tag: str | None = None,
     ) -> _Direction | None:
-        """한 방향(나가는·들어오는) 워크로드별 흐름 합계와 드롭·오류 판정 흐름."""
-        fetched = await self._fetch(key, ctx, QueryMode.CURRENT, targets, col)
+        """한 방향(나가는·들어오는) 워크로드별 흐름 합계와 드롭·오류 판정 흐름.
+
+        `at`이 있으면 그 시각까지의 5분 rate로 조회합니다(Service 이상 최고 시점).
+        """
+        fetched = await self._fetch(key, ctx, QueryMode.CURRENT, targets, col, at=at, tag=tag)
         if fetched is None:
             return None
         result, rows = fetched
@@ -543,41 +558,59 @@ class NetworkAgent:
         ctx: AnalysisContext,
         targets: Mapping[TargetKind, str],
         issues: Mapping[str, ServiceIssue],
+        peaks: Mapping[str, datetime],
         col: Collector,
     ) -> None:
         """Service 이상 대상과 이름이 같은 워크로드의 나가는·들어오는 흐름 판정 비율과 구간 내 드롭.
 
-        워크로드 쌍으로 집계하면 시계열이 매우 많아지므로 방향별로 한쪽 워크로드만 집계합니다.
-        경고는 흐름 판정 비율로만 정합니다(구간 내 드롭은 드롭 판정에서 이미 경고로 셈).
+        - 시간 기준: Service Agent가 찾은 그 서비스의 이상 최고 시점까지의 5분. 최고 시점을 모르거나
+          분석 구간 끝 무렵이면 현재 5분.
+        - 워크로드 쌍으로 집계하면 시계열이 매우 많아지므로 방향별로 한쪽 워크로드만 집계합니다.
+        - 경고는 흐름 판정 비율로만 정합니다(구간 내 드롭은 드롭 판정에서 이미 경고로 셈).
         """
-        egress = await self._direction(
-            "network.workload_egress_by_verdict", "source", ctx, targets, col
-        )
-        ingress = await self._direction(
-            "network.workload_ingress_by_verdict", "destination", ctx, targets, col
-        )
-        directions = [d for d in (egress, ingress) if d is not None]
-        if not directions:
-            return
-        if not any(d.labeled for d in directions):
-            col.limit(
-                "network.workload_*_by_verdict: 흐름 결과에 워크로드 라벨이 없어 "
-                "Service 이상 대상을 확인하지 못함"
-            )
-            return
-        if not all(d.fresh for d in directions):
-            col.limit(
-                "network.workload_*_by_verdict: 데이터 최신성을 확인하지 못해 Service 이상 대상을 "
-                "판단하지 않음"
-            )
-            return
-        col.limit(FOCUS_NOTE)
-        if self._scope_suffix:
-            col.limit(FOCUS_FILTER_NOTE)
+        egress_key = "network.workload_egress_by_verdict"
+        ingress_key = "network.workload_ingress_by_verdict"
+        current: tuple[_Direction | None, _Direction | None] | None = None
         scope = window_text(ctx)
+        noted = False
         unmatched: list[str] = []
+        unlabeled: list[str] = []
+        stale: list[str] = []
         names = list(issues)
+        recent = ctx.time_range.end - PEAK_CURRENT_MARGIN
         for name in names[: self._cfg.top_n]:
+            peak = peaks.get(name)
+            at_peak = peak if peak is not None and ctx.time_range.start < peak < recent else None
+            if at_peak is not None:
+                egress = await self._direction(
+                    egress_key, "source", ctx, targets, col, at=at_peak, tag=name
+                )
+                ingress = await self._direction(
+                    ingress_key, "destination", ctx, targets, col, at=at_peak, tag=name
+                )
+                basis = f"이상 최고 시점 {fmt_time(at_peak, seconds=False)}까지 5분"
+            else:
+                if current is None:
+                    current = (
+                        await self._direction(egress_key, "source", ctx, targets, col),
+                        await self._direction(ingress_key, "destination", ctx, targets, col),
+                    )
+                egress, ingress = current
+                basis = "현재, 5분"
+            directions = [d for d in (egress, ingress) if d is not None]
+            if not directions:
+                continue  # 조회 실패·결과 없음은 조회 단계에서 한계에 적음
+            if not any(d.labeled for d in directions):
+                unlabeled.append(name)
+                continue
+            if not all(d.fresh for d in directions):
+                stale.append(name)
+                continue
+            if not noted:
+                col.limit(FOCUS_NOTE)
+                if self._scope_suffix:
+                    col.limit(FOCUS_FILTER_NOTE)
+                noted = True
             seen = [d for d in directions if name in d.totals]
             if not seen:
                 unmatched.append(name)
@@ -604,7 +637,7 @@ class NetworkAgent:
                 Finding(
                     kind=FindingKind.FACT,
                     statement=(
-                        f"Service 이상 대상 {issues[name].label}의 네트워크{where}(현재, 5분): "
+                        f"Service 이상 대상 {issues[name].label}의 네트워크{where}({basis}): "
                         f"{out_text}, {in_text}; {drop_text}"
                     ),
                     severity=Severity.WARNING if out_bad or in_bad else Severity.INFO,
@@ -615,7 +648,18 @@ class NetworkAgent:
                     ),
                     evidence_ids=tuple(evidence),
                     basis=JudgementBasis.THRESHOLD,
+                    observed_at=at_peak,
                 )
+            )
+        if unlabeled:
+            col.limit(
+                f"Service 이상 대상 {', '.join(unlabeled)}: 흐름 결과에 워크로드 라벨이 없어 "
+                "네트워크를 확인하지 못함"
+            )
+        if stale:
+            col.limit(
+                f"Service 이상 대상 {', '.join(stale)}: 흐름 데이터 최신성을 확인하지 못해 "
+                "네트워크를 판단하지 않음"
             )
         if unmatched:
             col.limit(

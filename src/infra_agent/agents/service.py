@@ -619,7 +619,7 @@ class ServiceAgent:
             col.suggest(
                 "지연이 늘어난 서비스의 DB 호출·서비스 간 호출 지연 비교 "
                 "(이번 답변의 DB 호출 span·서비스 간 호출 지연 항목, "
-                "DB 내부 지표는 DB Agent, Network Agent는 미구현)"
+                "DB 내부 지표는 DB Agent, 네트워크 흐름·드롭은 Network Agent 확인)"
             )
 
     # ------------------------------------------------------------------ 서비스 간 호출
@@ -784,6 +784,7 @@ class ServiceAgent:
                 targets=(TargetRef(kind=TargetKind.SERVICE, name=service),),
                 evidence_ids=(result.evidence_id,),
                 basis=JudgementBasis.STATE,
+                observed_at=peak_at,
             )
         )
         traces = self._record(
@@ -901,6 +902,7 @@ class ServiceAgent:
                 targets=(TargetRef(kind=TargetKind.SERVICE, name=focus.service),),
                 evidence_ids=(result.evidence_id,),
                 basis=JudgementBasis.STATE,
+                observed_at=peak_at,
             )
         )
         return TimeRange(start=start, end=end)

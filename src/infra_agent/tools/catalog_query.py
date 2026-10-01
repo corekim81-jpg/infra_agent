@@ -22,7 +22,7 @@ import asyncio
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from infra_agent.catalog import Catalog, CatalogItem
@@ -40,6 +40,8 @@ from infra_agent.schemas import (
 from infra_agent.timeutil import utc_now
 
 RATE_RANGE = "5m"
+_RATE_WINDOW = timedelta(minutes=5)
+"""`RATE_RANGE`와 같은 길이 (평가 시각을 지정한 조회의 근거 구간)."""
 """rate/increase 계열 항목의 순간값 계산 구간."""
 
 
@@ -156,9 +158,20 @@ class CatalogQueryTool:
         ctx: AnalysisContext,
         mode: QueryMode,
         targets: Mapping[TargetKind, str] | None = None,
+        *,
+        at: datetime | None = None,
+        tag: str | None = None,
     ) -> QueryOutcome:
+        """카탈로그 항목을 조회합니다.
+
+        `at`: current 모드의 평가 시각을 분석 구간 끝 대신 지정(예: 서비스 이상 최고 시점).
+        이때 근거의 구간은 평가 시각까지의 rate 구간(5분)으로 기록합니다.
+        `tag`: 같은 항목을 여러 번 조회할 때 근거 ID를 구분(`<key>@<mode>:<tag>`).
+        """
         item = self.item(key)
-        evidence_id = f"{key}@{mode.value}"
+        evidence_id = f"{key}@{mode.value}" + (f":{tag}" if tag else "")
+        if at is not None and mode is not QueryMode.CURRENT:
+            raise ValueError("평가 시각 지정(at)은 current 모드에서만 가능합니다")
         # current 모드는 순간값이므로 구간 대신 평가 시각(분석 구간 끝)만 의미가 있습니다.
         window: TimeRange | None
         if mode is QueryMode.BASELINE_AVG:
@@ -167,9 +180,12 @@ class CatalogQueryTool:
             window = ctx.baseline_range
         elif mode in (QueryMode.WINDOW_AVG, QueryMode.WINDOW):
             window = ctx.time_range
+        elif at is not None:
+            window = TimeRange(start=at - _RATE_WINDOW, end=at)
         else:
             window = None
-        at = window.end if window is not None else ctx.time_range.end
+        if at is None:
+            at = window.end if window is not None else ctx.time_range.end
 
         selector, unsupported = item.selector_for(targets or {})
         if unsupported:

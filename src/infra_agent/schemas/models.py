@@ -208,6 +208,13 @@ class Finding(_Model):
     evidence_ids: tuple[str, ...] = Field(min_length=1)
     basis: JudgementBasis
     confidence: Confidence | None = None
+    observed_at: datetime | None = None
+    """시점이 있는 사실(예: 오류율·지연 최고 시점)의 관측 시각. 분야 간 확인의 시간 기준."""
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
 
     @model_validator(mode="after")
     def _rules(self) -> Self:

@@ -169,8 +169,10 @@ async def _run(
         return await agent.run(TASK, ctx, upstream or {})
 
 
-def _service_upstream(*names: str) -> dict[str, AgentResult]:
-    """선행 Service Agent 결과(가상): 이름마다 오류율 경고 1건."""
+def _service_upstream(
+    *names: str, peaks: dict[str, datetime] | None = None
+) -> dict[str, AgentResult]:
+    """선행 Service Agent 결과(가상): 이름마다 오류율 경고 1건, `peaks`가 있으면 최고 시점 사실."""
     evidence = ToolResult(
         evidence_id="service.error_ratio@current",
         source=DataSourceKind.PROMETHEUS,
@@ -190,6 +192,16 @@ def _service_upstream(*names: str) -> dict[str, AgentResult]:
             basis=JudgementBasis.THRESHOLD,
         )
         for n in names
+    ) + tuple(
+        Finding(
+            kind=FindingKind.FACT,
+            statement=f"오류율 최고 시점 ({n}): ...",
+            targets=(TargetRef(kind=TargetKind.SERVICE, name=n),),
+            evidence_ids=(evidence.evidence_id,),
+            basis=JudgementBasis.STATE,
+            observed_at=at,
+        )
+        for n, at in (peaks or {}).items()
     )
     return {
         "service-1": AgentResult(
@@ -281,6 +293,84 @@ async def test_service_focus_checks_upstream_issue_workloads() -> None:
     assert any("sum by (verdict, source_namespace, source_workload) (rate(" in q for q in queried)
 
 
+async def test_service_focus_uses_service_peak_time() -> None:
+    """Service가 찾은 이상 최고 시점까지의 5분으로 흐름을 조회 (스파이크를 놓치지 않게)."""
+    ctx = _ctx()
+    fake = ExprProm()
+    _fill(ctx, fake)
+    peak = NOW - timedelta(minutes=8)
+    egress = _expr("network.workload_egress_by_verdict", ctx)
+    ingress = _expr("network.workload_ingress_by_verdict", ctx)
+    # 최고 시점에는 들어오는 흐름의 드롭 비율이 높고, 현재는 정상
+    fake.add(
+        egress,
+        [
+            (
+                {
+                    "source_namespace": "otel-demo",
+                    "source_workload": "cart",
+                    "verdict": "FORWARDED",
+                },
+                2.0,
+            )
+        ],
+    )
+    fake.add(
+        ingress,
+        [
+            (
+                {
+                    "destination_namespace": "otel-demo",
+                    "destination_workload": "cart",
+                    "verdict": "FORWARDED",
+                },
+                5.0,
+            )
+        ],
+    )
+    fake.add(
+        ingress,
+        [
+            (
+                {
+                    "destination_namespace": "otel-demo",
+                    "destination_workload": "cart",
+                    "verdict": "FORWARDED",
+                },
+                5.0,
+            ),
+            (
+                {
+                    "destination_namespace": "otel-demo",
+                    "destination_workload": "cart",
+                    "verdict": "DROPPED",
+                },
+                5.0,
+            ),
+        ],
+        at=peak,
+    )
+    upstream = _service_upstream("cart", peaks={"cart": peak})
+    result = await _run(ctx, fake, upstream=upstream)
+    [cart] = [f for f in result.findings if f.statement.startswith("Service 이상 대상 cart")]
+    assert (
+        "의 네트워크 [otel-demo](이상 최고 시점 2026-09-29 02:52 UTC까지 5분): " in cart.statement
+    )
+    assert "들어오는 흐름 10건/초(드롭·오류 판정 50.0%, 기준 5.0% 이상)" in cart.statement
+    assert cart.severity is Severity.WARNING and cart.observed_at == peak
+    assert cart.evidence_ids[:2] == (
+        "network.workload_egress_by_verdict@current:cart",
+        "network.workload_ingress_by_verdict@current:cart",
+    )
+    peak_queries = [at for q, at in fake.queries if q == ingress]
+    assert peak_queries and all(at is not None for at in peak_queries)
+    # 최고 시점이 분석 구간 끝 무렵이면 현재 5분으로 조회
+    late = _service_upstream("cart", peaks={"cart": NOW - timedelta(seconds=20)})
+    now_result = await _run(ctx, fake, upstream=late)
+    [cart2] = [f for f in now_result.findings if f.statement.startswith("Service 이상 대상 cart")]
+    assert "(현재, 5분)" in cart2.statement and cart2.observed_at is None
+
+
 async def test_service_focus_unjudged_fact_has_no_service_target() -> None:
     """비율도 드롭도 판정하지 못하면 서비스 대상을 붙이지 않음 ('이상 없음' 근거에서 제외)."""
     ctx = _ctx()
@@ -351,8 +441,7 @@ async def test_service_focus_skipped_or_unlabeled() -> None:
         fake2.add(_expr(key, ctx), [({"verdict": "FORWARDED"}, 3.0)])
     result = await _run(ctx, fake2, upstream=_service_upstream("cart"))
     assert (
-        "network.workload_*_by_verdict: 흐름 결과에 워크로드 라벨이 없어 "
-        "Service 이상 대상을 확인하지 못함"
+        "Service 이상 대상 cart: 흐름 결과에 워크로드 라벨이 없어 네트워크를 확인하지 못함"
     ) in result.limitations
     assert not any(f.statement.startswith("Service 이상 대상") for f in result.findings)
 
@@ -383,7 +472,9 @@ async def test_service_focus_skipped_or_unlabeled() -> None:
     _workload_flows(ctx, stale)
     old = await _run(ctx, stale, upstream=_service_upstream("cart"))
     assert not any(f.statement.startswith("Service 이상 대상") for f in old.findings)
-    assert any("데이터 최신성을 확인하지 못해 Service 이상 대상을" in x for x in old.limitations)
+    assert any(
+        "Service 이상 대상 cart: 흐름 데이터 최신성을 확인하지 못해" in x for x in old.limitations
+    )
 
 
 async def test_counts_ratios_and_context() -> None:

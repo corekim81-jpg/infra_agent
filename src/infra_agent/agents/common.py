@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.config.settings import AnalysisConfig
@@ -57,9 +58,16 @@ async def fetch_evidence(
     mode: QueryMode,
     targets: Mapping[TargetKind, str],
     col: Collector,
+    *,
+    at: datetime | None = None,
+    tag: str | None = None,
 ) -> ToolResult | None:
-    """조회하고 근거로 기록합니다. 조회하지 못했거나 실패하면 한계를 남기고 None."""
-    outcome = await tool.query(key, ctx, mode, targets)
+    """조회하고 근거로 기록합니다. 조회하지 못했거나 실패하면 한계를 남기고 None.
+
+    `at`·`tag`는 `CatalogQueryTool.query`와 같습니다(평가 시각 지정, 근거 ID 구분).
+    """
+    outcome = await tool.query(key, ctx, mode, targets, at=at, tag=tag)
+    label = f"{key}:{tag}" if tag else key
     result = outcome.result
     if outcome.skipped:
         kinds = ", ".join(k.value for k in outcome.unsupported_targets)
@@ -69,14 +77,14 @@ async def fetch_evidence(
     col.add_evidence(result)
     if result.status in (ToolStatus.ERROR, ToolStatus.TIMEOUT):
         col.failed_queries += 1
-        col.errors.append(ErrorInfo(code=result.status.value, message=f"{key}: {result.error}"))
-        col.limit(f"{key}: 조회 실패로 확인하지 못함 ({result.error})")
+        col.errors.append(ErrorInfo(code=result.status.value, message=f"{label}: {result.error}"))
+        col.limit(f"{label}: 조회 실패로 확인하지 못함 ({result.error})")
         return None
     if result.freshness_seconds is None:
-        col.limit(f"{key}: 데이터 최신성을 확인하지 못함")
+        col.limit(f"{label}: 데이터 최신성을 확인하지 못함")
     elif result.freshness_seconds > cfg.stale_after_seconds:
         col.limit(
-            f"{key}: 최신 샘플이 {result.freshness_seconds:.0f}초 전으로 오래되어(기준 "
+            f"{label}: 최신 샘플이 {result.freshness_seconds:.0f}초 전으로 오래되어(기준 "
             f"{cfg.stale_after_seconds}초) 현재 상태를 반영하지 못할 수 있음"
         )
     return result
