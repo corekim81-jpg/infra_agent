@@ -41,6 +41,7 @@ from infra_agent.schemas import (
     ToolStatus,
 )
 from infra_agent.tools import CatalogQueryTool, QueryMode, ToolBudget
+from infra_agent.units import fmt_time
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = load_catalog(ROOT / "config/catalog/otel-demo.yaml")
@@ -353,9 +354,9 @@ async def test_service_focus_uses_service_peak_time() -> None:
     upstream = _service_upstream("cart", peaks={"cart": peak})
     result = await _run(ctx, fake, upstream=upstream)
     [cart] = [f for f in result.findings if f.statement.startswith("Service 이상 대상 cart")]
-    assert (
-        "의 네트워크 [otel-demo](이상 최고 시점 2026-09-29 02:52 UTC까지 5분): " in cart.statement
-    )
+    # 시간대 표시는 실행 환경마다 다름(예: Windows "Coordinated Universal Time")
+    when = fmt_time(peak, seconds=False)
+    assert f"의 네트워크 [otel-demo](이상 최고 시점 {when}까지 5분): " in cart.statement
     assert "들어오는 흐름 10건/초(드롭·오류 판정 50.0%, 기준 5.0% 이상)" in cart.statement
     assert cart.severity is Severity.WARNING and cart.observed_at == peak
     assert cart.evidence_ids[:2] == (
