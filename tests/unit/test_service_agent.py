@@ -188,7 +188,12 @@ def _details(ctx: AnalysisContext, fake: FakeBackend, *, lines_total: float = 10
 
 
 async def _run(
-    ctx: AnalysisContext, fake: FakeBackend, *, logs: bool = True, traces: bool = True
+    ctx: AnalysisContext,
+    fake: FakeBackend,
+    *,
+    logs: bool = True,
+    traces: bool = True,
+    analysis: AnalysisConfig | None = None,
 ) -> AgentResult:
     budget = ToolBudget(100)
     async with (
@@ -201,7 +206,7 @@ async def _run(
         )
         agent = ServiceAgent(
             tool,
-            AnalysisConfig(),
+            analysis or AnalysisConfig(),
             logs=LogQueryTool(
                 CATALOG, loki, agent=AgentName.SERVICE, budget=budget, timeout_seconds=5
             )
@@ -431,12 +436,14 @@ async def test_overview_when_question_asks_for_logs() -> None:
         for x in result.limitations
     )
     # 선택 순서: 오류 로그 → SERVER 외 span 오류(현재) → 구간 오류 트레이스의 루트 서비스
-    picked_note = next(x for x in result.limitations if x.startswith("기준을 넘거나"))
+    # 무엇을 대신 확인했는지는 한계가 아니라 사실로 답변 본문에 표시 (#33)
+    picked = next(f for f in result.findings if f.statement.startswith("오류율 기준 초과·증가"))
     assert (
-        "기준을 넘거나 증가한 오류 서비스가 없어, 오류 로그가 많은 서비스·SERVER 외 span 오류가 "
+        "오류율 기준 초과·증가 서비스 없음 → 오류 로그가 많은 서비스·SERVER 외 span 오류가 "
         "있는 서비스·오류 트레이스의 루트 서비스 기준으로"
-    ) in picked_note
-    assert picked_note.endswith(": cart, worker, frontend")
+    ) in picked.statement
+    assert picked.statement.endswith(": cart, worker, frontend")
+    assert picked.evidence_ids == ("log.error_lines@window", "trace.errors@window")
     assert not any(q == build_traceql(events, errors=True) for _, q in fake.calls)
     assert any(q == build_traceql("worker", errors=True) for _, q in fake.calls)
     assert any(q == build_traceql("frontend", errors=True) for _, q in fake.calls)
@@ -465,7 +472,9 @@ async def test_overview_falls_back_to_error_trace_roots() -> None:
     ]
     fake.tempo[build_traceql("cart", errors=True)] = [{"traceID": TRACE_A}]
     result = await _run(ctx, fake)
-    note = next(x for x in result.limitations if x.startswith("기준을 넘거나"))
+    note = next(
+        f.statement for f in result.findings if f.statement.startswith("오류율 기준 초과·증가")
+    )
     assert "오류 트레이스의 루트 서비스 기준으로" in note
     assert note.endswith(": cart, load-generator")
     assert any(
@@ -679,6 +688,46 @@ async def test_failing_call_path_focuses_on_server_side() -> None:
     assert not any(t.startswith("오류율 최고 시점") for t in texts)
     assert any("0보다 큰 시점이 없어 구간 전체로" in x for x in result.limitations)
     assert any(t.startswith("오류 키워드 로그 (cart, ") and "0건 / 전체 100건" in t for t in texts)
-    assert not any(
-        x.startswith("기준을 넘거나 증가한 오류 서비스가 없어") for x in result.limitations
+    assert not any(t.startswith("오류율 기준 초과·증가 서비스 없음") for t in texts)
+
+
+async def test_streaming_calls_are_not_judged_for_latency() -> None:
+    """설정한 스트리밍 서비스로의 호출 지연은 경고·이상 대상에서 빼고 정보로 표시 (#33)."""
+    from infra_agent.agents.upstream import service_issues
+
+    ctx = _ctx()
+    fake = FakeBackend()
+    _red(ctx, fake)
+    fake.add(
+        _expr("service.dependency_latency_p95", ctx),
+        [
+            ({"client": "ad", "server": "flagd"}, 12.8),
+            ({"client": "frontend", "server": "cart"}, 2.0),
+        ],
     )
+    default = await _run(ctx, fake, logs=False, traces=False)
+    warned = [f.statement for f in default.findings if f.severity is Severity.WARNING]
+    assert any("ad → flagd" in t for t in warned)  # 설정이 없으면 기존대로 경고
+
+    cfg = AnalysisConfig(streaming_services=("FLAGD",))  # 대소문자 무시
+    result = await _run(ctx, fake, logs=False, traces=False, analysis=cfg)
+    warned = [f.statement for f in result.findings if f.severity is Severity.WARNING]
+    assert not any("flagd" in t for t in warned)
+    assert any("frontend → cart 2초" in t for t in warned)  # 다른 호출은 계속 판정
+    info = next(
+        f for f in result.findings if "스트리밍 호출로 설정되어 판정 기준 미적용" in f.statement
+    )
+    assert info.severity is Severity.INFO and "ad → flagd 12.8초" in info.statement
+    assert any("analysis.streaming_services" in x and "flagd" in x for x in result.limitations)
+    assert "flagd" not in service_issues([result]) and "cart" in service_issues([result])
+
+
+async def test_cause_question_without_log_words_skips_overview() -> None:
+    """질문의 "원인"만으로는 로그·트레이스 개요를 조회하지 않음 (#33)."""
+    ctx = _ctx(question="서비스 응답이 느려진 원인이 뭐야?")
+    fake = FakeBackend()
+    _red(ctx, fake, cart_error=0.0)
+    fake.add(_expr("service.dependency_failed_rate", ctx), [])
+    result = await _run(ctx, fake)
+    assert not any(path.startswith("/loki") for path, _ in fake.calls)
+    assert not any("오류 키워드 로그가 많은 서비스" in f.statement for f in result.findings)
