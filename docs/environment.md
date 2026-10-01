@@ -117,6 +117,7 @@
 - **Hubble 지표의 `k8s_namespace_name`·`k8s_pod_name`:** 트래픽 대상이 아니라 수집 주체(cilium) Pod를 가리킵니다. 대상 필터는 `source_*`/`destination_*` 라벨을 씁니다.
 - **DNS 오류율:** Hubble DNS 지표에 응답 코드(rcode) 라벨이 없어 판단할 수 없습니다.
 - **DNS 질의량:** 개발 환경 live 확인(2026-09-30) 결과 `hubble_dns_queries_total`의 5분 증가율이 0이었습니다. Hubble DNS 지표는 DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계하므로 실제 DNS 질의량으로 보지 않습니다. 필요하면 CiliumNetworkPolicy의 DNS 규칙(`toPorts.rules.dns`)으로 가시성을 켜야 합니다.
+- **스트리밍 호출 지연:** 개발 환경에서는 flagd를 호출받는 서비스 간 호출 일부의 지연 p95가 히스토그램 상한(12.8초 이상)으로 꾸준히 나옵니다(2026-09-30~10-01 live). 기능 플래그 이벤트 스트림처럼 오래 열린 호출로 보이므로, `config/local.yaml`의 `analysis.streaming_services: [flagd]`로 지연 판정에서 뺄 수 있습니다(기본값은 비어 있음, #33).
 - **Hubble 드롭 사유:** 개발 환경에서는 `UNSUPPORTED_L3_PROTOCOL`(IPv4·IPv6가 아닌 L3 패킷) 드롭이 출발·도착 라벨 없이 30분에 수십 회 꾸준히 발생합니다. 일반적으로 장애가 아니므로 `analysis.benign_drop_reasons` 기본값으로 정보 표시합니다.
 - **서비스 지표 라벨 차이:** spanmetrics는 `service`, service graph는 `client`/`server`, 나머지는 `service_name`을 씁니다. 카탈로그의 `target_labels`가 이 차이를 흡수합니다.
 - **값 의미 미검증:** `k8s_pod_phase`(1~5 값), `k8s_node_condition_*`(1/0/-1), spanmetrics `status_code`·`span_kind` 값, 커넥션 상태 라벨 값은 가정이며 카탈로그 caveats에 적었습니다.

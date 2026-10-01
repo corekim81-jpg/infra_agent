@@ -183,6 +183,11 @@ class AnalysisConfig(_Strict):
     """오류율 최고 시점 전후로 로그·트레이스를 볼 구간 길이."""
     log_sample_limit: int = Field(default=3, ge=0, le=20)
     trace_sample_limit: int = Field(default=3, ge=0, le=20)
+    streaming_services: tuple[str, ...] = ()
+    """서비스 간 호출 지연을 판정하지 않을 스트리밍 서비스(호출받는 쪽, 대소문자 무시).
+
+    오래 열린 스트림(예: 기능 플래그 이벤트 스트림)은 p95가 지연이 아니라 연결 유지 시간이므로
+    운영자가 지정합니다. 값은 판정 기준 미적용 정보로 표시하고, 호출 실패율은 계속 판정합니다."""
     # --- DB Agent (#25). 연결·풀 사용률은 utilization_*, DB 지연은 latency_p95_warning_seconds 사용
     rollback_ratio_warning: float = Field(default=0.05, gt=0, le=1)
     """PostgreSQL 롤백 비율(rollbacks / (commits + rollbacks)) 경고 기준."""

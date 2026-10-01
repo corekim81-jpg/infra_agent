@@ -68,6 +68,8 @@ analysis:                    # 판정 기준 (제안 기본값)
   peak_window_seconds: 600           # 오류율 최고 시점 전후로 볼 구간
   log_sample_limit: 3
   trace_sample_limit: 3
+  streaming_services: []             # 호출 지연을 판정하지 않을 스트리밍 서비스(호출받는 쪽)
+  #   OTel Demo 예: [flagd]  — flagd 이벤트 스트림 호출의 p95가 연결 유지 시간(히스토그램 상한)으로 나옴
   # DB Agent (연결·커넥션 풀 사용률은 utilization_*, DB 지연은 latency_p95_warning_seconds를 함께 사용)
   rollback_ratio_warning: 0.05       # PostgreSQL 롤백 비율 경고
   cache_hit_ratio_warning: 0.9       # PostgreSQL 버퍼 캐시 적중률이 이보다 낮으면 경고

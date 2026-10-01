@@ -77,8 +77,11 @@ SCOPE_NOTE = (
 )
 UNKNOWN_ROOT = "(루트 span 미수신)"
 """오류 트레이스의 루트 서비스를 알 수 없을 때 개요에 쓰는 이름 (상세 대상에서 제외)."""
-LOG_WORDS = ("로그", "log", "트레이스", "trace", "추적", "원인")
-"""질문에 이 단어가 있으면 오류 서비스가 없어도 로그·트레이스 개요를 조회합니다."""
+LOG_WORDS = ("로그", "log", "트레이스", "trace", "추적")
+"""질문에 이 단어가 있으면 오류 서비스가 없어도 로그·트레이스 개요를 조회합니다.
+
+"원인"만으로는 조회하지 않습니다(#33): 오류 서비스가 있으면 상세 확인은 따로 하고, 지연 원인
+질문에 로그 개요까지 조회하면 조회가 과해집니다."""
 TRACE_LINK_SEARCH_LIMIT = 20
 """trace_id 연결 확인용 오류 트레이스 검색 건수 (표시는 `trace_sample_limit`개)."""
 
@@ -414,6 +417,41 @@ class ServiceAgent:
 
     # ------------------------------------------------------------------ 지연
 
+    async def _streaming_fact(
+        self,
+        check: LatencyCheck,
+        skipped: list[tuple[TargetRef, float]],
+        targets: Mapping[TargetKind, str],
+        ctx: AnalysisContext,
+        result: ToolResult,
+        col: Collector,
+    ) -> None:
+        """스트리밍으로 설정된 호출의 지연 값 (판정 기준 미적용 정보)."""
+        skipped.sort(key=lambda x: -x[1])
+        bound = await self._tool.max_bucket_bound(check.key, targets, ctx.time_range.end)
+        parts = []
+        for target, value in skipped[: self._cfg.top_n]:
+            shown = fmt_value(value, "seconds")
+            if bound is not None and value >= bound * (1 - 1e-9):
+                shown += " 이상(히스토그램 최대 구간)"
+            parts.append(f"{target.name} {shown}")
+        servers = sorted({t.labels.get("server", "") for t, _ in skipped} - {""})
+        col.findings.append(
+            Finding(
+                kind=FindingKind.FACT,
+                statement=f"{check.label}(현재, 스트리밍 호출로 설정되어 판정 기준 미적용): "
+                + ", ".join(parts),
+                severity=Severity.INFO,
+                evidence_ids=(result.evidence_id,),
+                basis=JudgementBasis.STATE,
+            )
+        )
+        col.limit(
+            f"{check.key}: {', '.join(servers)} 호출 {len(skipped)}개는 "
+            "analysis.streaming_services 설정에 따라 지연을 판정하지 않음 (오래 열린 스트림은 "
+            "p95가 연결 유지 시간이므로). 호출 실패율은 판정함"
+        )
+
     async def _latency(
         self,
         check: LatencyCheck,
@@ -438,6 +476,17 @@ class ServiceAgent:
             col.limit(f"{check.key}: 결과가 없어 지연을 판단하지 않음")
             return
         warn = self._cfg.latency_p95_warning_seconds
+        streaming = {s.lower() for s in self._cfg.streaming_services}
+        skipped = (
+            [(t, v) for t, v in items if t.labels.get("server", "").lower() in streaming]
+            if streaming and not check.service_level
+            else []
+        )
+        if skipped:
+            items = [x for x in items if x not in skipped]
+            await self._streaming_fact(check, skipped, targets, ctx, result, col)
+            if not items:
+                return
         items.sort(key=lambda x: -x[1])
         exceeded = [x for x in items if x[1] >= warn]
         top_bound = (
@@ -476,7 +525,8 @@ class ServiceAgent:
                 f"{check.key}: p95가 히스토그램 최대 유한 구간 경계"
                 f"({fmt_value(top_bound or 0.0, 'seconds')})와 같은 대상 {saturated}개는 "
                 "실제 값이 그보다 클 수 있음 (스트리밍처럼 오래 열린 호출이면 지연이 아니라 "
-                "연결 유지 시간일 수 있음)"
+                "연결 유지 시간일 수 있음. 스트리밍 서비스는 analysis.streaming_services로 "
+                "지정하면 판정에서 제외)"
             )
         if exceeded or not is_fresh(result, self._cfg):
             return
@@ -1088,10 +1138,28 @@ class ServiceAgent:
         if not skip:
             if picked:
                 basis = "·".join(dict.fromkeys(basis_of[s] for s in picked))
-                col.limit(
-                    f"기준을 넘거나 증가한 오류 서비스가 없어, {basis} 기준으로 "
-                    f"{span} 구간의 로그·트레이스를 확인함: " + ", ".join(picked)
+                # 질문의 "오류가 증가한 시간대"를 대신해 무엇을 봤는지 답변 본문(사실)에 밝힘
+                ids = tuple(
+                    i
+                    for i in ("log.error_lines@window", "trace.errors@window")
+                    if i in col.evidence
                 )
+                text = (
+                    f"오류율 기준 초과·증가 서비스 없음 → {basis} 기준으로 {span} 구간의 "
+                    "로그·트레이스를 대신 확인: " + ", ".join(picked)
+                )
+                if ids:
+                    col.findings.append(
+                        Finding(
+                            kind=FindingKind.FACT,
+                            statement=text,
+                            severity=Severity.INFO,
+                            evidence_ids=ids,
+                            basis=JudgementBasis.STATE,
+                        )
+                    )
+                else:
+                    col.limit(text)
             else:
                 col.limit(
                     "오류 로그·SERVER 외 span 오류·오류 트레이스 기준으로 상세 확인할 서비스를 "
