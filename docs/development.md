@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 12b단계 진행 중 (#31).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29)이 있습니다.
-> Kubernetes API 연동(8b)은 아직 없습니다. 대표 질문 품질 평가(12b)는 도구(`eval` 명령)가 구현됐고, 개발 서버 실행 기록은 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 12b단계 (#31) 평가 기록 완료.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29)이 있습니다.
+> Kubernetes API 연동(8b)은 아직 없습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록(2026-10-01, 7/7 통과)이 있으며, 답변 문장의 사람 검토는 남았습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -144,7 +144,7 @@ infra_agent/
 | 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 완료 (#25, PR #26; 개발 서버 live 3건 통과 2026-09-30) |
 | 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 완료 (#27, PR #28; 개발 서버 live 2건 통과 2026-09-30) |
 | 12 | 분야 간 교차 분석 | Service 이상 대상 추출, Network 집중 확인(서비스 이상 최고 시점 기준), Coordinator 교차 확인(연결·미연결·미확인 구분, 동시 발생 원인 후보) | "네트워크인지 DB인지" 질문에 분야별 연결 결과 답변 (가상 + live) | 8–11 | 완료 (#29, PR #30; 개발 서버 live 3건 통과 2026-10-01) |
-| 12b | 대표 질문 품질 평가 | 평가 세트(`config/eval/questions.yaml`), 결정적 평가 기준(`evaluation`), `eval` 명령, [evaluation.md](evaluation.md) | 대표 질문 7개 평가 기록 | 12 | 진행 중 (#31; 개발 서버 실행 기록 필요) |
+| 12b | 대표 질문 품질 평가 | 평가 세트(`config/eval/questions.yaml`), 결정적 평가 기준(`evaluation`), `eval` 명령, [evaluation.md](evaluation.md) | 대표 질문 7개 평가 기록 | 12 | 완료 (#31, PR #32; 개발 서버 평가 모델 사용·미사용 각 7/7 통과 2026-10-01. 사람 검토는 남음) |
 | 13 | 배포·확장 | Containerfile(Rocky Linux 9), Kubernetes 배포·RBAC, MCP 경로, HTTP API | 클러스터 내부 읽기 전용 실행 확인 | 12 | 계획 |
 
 8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 개발 환경(OTel Demo)에서만 `full`로 결정되었습니다(2026-09-29). 운영 환경의 정책은 결정 전까지 `none`을 사용합니다.
