@@ -238,6 +238,8 @@ def cross_check(
     }
     checked: list[str] = []
     unchecked: list[str] = []
+    clear_domains: list[str] = []
+    anomaly_counts: dict[str, int] = {}
     for result in others:
         domain = DOMAIN_LABELS[result.agent]
         is_partial = result.status is AgentStatus.PARTIAL
@@ -268,8 +270,10 @@ def cross_check(
             else:
                 groups[name][UNADDRESSED].append(tag)
         if not anomalies:
+            clear_domains.append(tag)
             lines.append(f"{domain}: 확인한 항목에서 기준을 넘는 이상 없음{partial}")
             continue
+        anomaly_counts[domain] = len(anomalies)
         text = f"{domain}: 이상 {len(anomalies)}건"
         if issues:
             unlinked = [f for f in anomalies if id(f) not in used]
@@ -284,10 +288,18 @@ def cross_check(
         lines.extend(_issue_line(issue, groups[name]) for name, issue in issues.items())
 
     if not issues:
+        # 원인을 묻는 질문에 직접 답하도록, 전제(서비스 이상)가 없다는 것과 분야별 결과를 함께 적음
         summary = (
-            "분야 간 교차 확인: 서비스 이상 대상이 없어 다른 분야의 이상을 서비스 영향과 "
-            "연결하지 않았습니다."
+            "분야 간 교차 확인: 서비스 오류율·응답 지연 이상이 확인되지 않아 원인 분야를 가리지 "
+            "않았습니다."
         )
+        if clear_domains:
+            summary += f" {', '.join(clear_domains)}도 확인한 항목에서 기준을 넘는 이상이 없습니다."
+        if anomaly_counts:
+            found = ", ".join(f"{d} {n}건" for d, n in anomaly_counts.items())
+            summary += f" 다른 분야 이상({found})은 서비스 영향과 연결하지 않았습니다."
+        if unchecked:
+            summary += f" {', '.join(unchecked)} 분야는 확인하지 못했습니다."
     else:
 
         def has(domain: str, kind: str) -> int:

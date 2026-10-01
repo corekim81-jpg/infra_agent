@@ -339,7 +339,9 @@ async def test_db_question_runs_only_db_agent() -> None:
         transport=fake.transport(),
     )
     assert [r.agent for r in bundle.results] == [AgentName.DB]
-    assert bundle.answer.unverified_areas == ()
+    assert bundle.answer.unverified_areas == (
+        "DB·캐시: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)",
+    )
     text = render_text(bundle)
     assert "(에이전트 실행: db 성공 " in text
 
@@ -359,7 +361,10 @@ async def test_slow_service_question_runs_service_then_network_and_db() -> None:
         AgentName.DB,
     ]
     assert [run.depends_on for run in bundle.runs] == [(), ("service-1",), ("service-1",)]
-    assert bundle.answer.unverified_areas == ()
+    assert bundle.answer.unverified_areas == tuple(
+        f"{d}: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)"
+        for d in ("서비스·로그·트레이스", "네트워크", "DB·캐시")
+    )
     # 데이터가 없으면 교차 확인은 "이상 없음"이 아니라 판단 불가로 답함
     text = render_text(bundle)
     assert (

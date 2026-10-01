@@ -619,7 +619,9 @@ async def test_network_question_runs_only_network_agent() -> None:
         transport=ExprProm().transport(),
     )
     assert [r.agent for r in bundle.results] == [AgentName.NETWORK]
-    assert bundle.answer.unverified_areas == ()
+    assert bundle.answer.unverified_areas == (
+        "네트워크: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)",
+    )  # 데이터 없음 → 미구현이 아니라 판단 결과 없음
     assert "(에이전트 실행: network 성공 " in render_text(bundle)
 
 

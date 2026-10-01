@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
+from infra_agent.agents.common import asks_cause
 from infra_agent.agents.server import LIMIT_NEAR_CHECK
 from infra_agent.answer.cross import DEFAULT_STALE_SECONDS, cross_check
 from infra_agent.llm.policy import sample_rows
@@ -99,10 +100,24 @@ def _summary(
             text = "판단에 사용할 수 있는 결과가 없어 이상 여부를 판단하지 못했습니다."
     if partial:
         text += " 일부 조회를 완료하지 못해 결과가 불완전합니다."
+    blank = _no_fact_domains(results)
+    if blank and facts:
+        # 다른 분야의 판정만으로 "이상 없음"처럼 읽히지 않게, 판단 결과가 없는 분야를 밝힙니다.
+        text += f" ({', '.join(blank)} 분야는 판단에 사용할 결과가 없어 확인하지 못했습니다.)"
     if interp.unsupported_domains:
         names = ", ".join(DOMAIN_NAMES.get(d, d) for d in sorted(interp.unsupported_domains))
         text += f" ({names} 분야는 아직 분석하지 않았습니다.)"
     return text
+
+
+def _no_fact_domains(results: Sequence[AgentResult]) -> list[str]:
+    """실행은 됐지만(성공·부분 성공) 판단 결과(사실)가 하나도 없는 분야."""
+    return [
+        DOMAIN_NAMES.get(r.agent.value, r.agent.value)
+        for r in results
+        if r.status in (AgentStatus.SUCCESS, AgentStatus.PARTIAL)
+        and not any(f.kind is FindingKind.FACT for f in r.findings)
+    ]
 
 
 MAX_SHOWN_SAMPLES = 3
@@ -135,7 +150,13 @@ def synthesize(
     interp: Interpretation,
     results: Sequence[AgentResult],
     stale_after_seconds: float = DEFAULT_STALE_SECONDS,
+    question: str = "",
 ) -> FinalAnswer:
+    """에이전트 결과를 답변으로 종합합니다.
+
+    분야 간 교차 확인 요약은 서비스 이상 대상이 있거나 질문이 원인을 물을 때만 요약에 붙입니다
+    (단순 비교 질문의 요약을 원인 분석 문장으로 채우지 않음). 교차 확인 줄은 항상 답변에 둡니다.
+    """
     change_first = _compares(interp, results)
     facts = sorted(
         (f for r in results for f in r.findings if f.kind is FindingKind.FACT),
@@ -176,6 +197,10 @@ def synthesize(
             unverified.append(f"{r.agent.value} 에이전트: 실패로 확인하지 못함{reason}")
         elif r.status is AgentStatus.SKIPPED:
             unverified.append(f"{r.agent.value} 에이전트: 실행하지 않음{reason}")
+    unverified.extend(
+        f"{name}: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)"
+        for name in _no_fact_domains(results)
+    )
     next_checks = list(dict.fromkeys(x for r in results for x in r.next_checks))
     if any(r.agent is AgentName.KUBERNETES and r.status is AgentStatus.SUCCESS for r in results):
         # 같은 요청에서 Kubernetes Agent가 이미 확인했으므로 Server의 확인 제안은 뺍니다.
@@ -183,7 +208,8 @@ def synthesize(
     cross = cross_check(results, stale_after_seconds)
     limitations.extend(x for x in cross.limitations if x not in limitations)
     summary = _summary(facts, results, interp)
-    if cross.summary:
+    has_issues = bool(cross.lines) and not cross.lines[0].startswith("서비스 이상 대상: 없음")
+    if cross.summary and (has_issues or asks_cause(question)):
         summary += " " + cross.summary
     return FinalAnswer(
         request_id=request_id,

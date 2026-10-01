@@ -74,6 +74,38 @@ def test_numbers_grounded() -> None:
     assert not numbers_grounded("사용률 95.2%", "... 91.7% ...")
 
 
+async def test_question_and_window_numbers_are_grounded() -> None:
+    """live(2026-10-01): 질문·분석 구간의 수치("직전 30분")를 쓴 원인 후보가 제외되던 문제."""
+    fake = FakeLLM(
+        {
+            "explain_server": {
+                "hypotheses": [
+                    {
+                        "statement": "직전 30분 대비 큰 변화 없이 91.7%가 지속된 상태로 보임",
+                        "evidence_ids": [EVIDENCE.evidence_id],
+                        "confidence": "low",
+                    },
+                    {
+                        "statement": "1시간 전부터 limit에 근접했을 가능성",
+                        "evidence_ids": [EVIDENCE.evidence_id],
+                        "confidence": "low",
+                    },
+                ],
+                "next_checks": [],
+            }
+        }
+    )
+    ctx = CTX.model_copy(
+        update={
+            "question": "직전 30분과 비교해서 현재 상태가 어떻게 달라졌어?",
+            "time_range": TimeRange.last(timedelta(hours=1), NOW),
+        }
+    )
+    out = await _explainer(fake).explain(RESULT, ctx)
+    assert out.hypotheses[0].statement.startswith("직전 30분 대비")
+    assert len(out.hypotheses) == 2 and not out.rejected  # 30은 질문, 1은 구간 길이(시간)
+
+
 async def test_valid_hypothesis_kept_invalid_rejected() -> None:
     fake = FakeLLM(
         {
@@ -155,6 +187,9 @@ async def test_not_needed_without_anomalies() -> None:
     cause = await with_explanation(info, _explainer(fake), why)
     assert cause.limitations == (NO_ANOMALY_NO_HYPOTHESIS,) and not fake.requests
     assert (await with_explanation(info, None, why)).limitations == ()  # 모델 미설정
+    # 판단 결과(사실)가 하나도 없으면 "이상 징후 없음"이라고 하지 않음 (데이터 부재 ≠ 정상)
+    blank = RESULT.model_copy(update={"findings": ()})
+    assert (await with_explanation(blank, _explainer(fake), why)).limitations == ()
 
 
 def test_duplicate_check() -> None:

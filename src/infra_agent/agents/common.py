@@ -20,6 +20,7 @@ from infra_agent.schemas import (
     AnalysisContext,
     ErrorInfo,
     Finding,
+    FindingKind,
     TargetKind,
     ToolResult,
     ToolStatus,
@@ -140,7 +141,9 @@ async def with_explanation(
     if explainer is None:
         return result
     if not explainer.needed(result):
-        if asks_cause(ctx.question):
+        # 판단 결과(사실)가 있을 때만 "이상 징후 없음"을 말합니다(데이터 부재를 정상으로 보지 않음).
+        has_facts = any(f.kind is FindingKind.FACT for f in result.findings)
+        if asks_cause(ctx.question) and has_facts:
             return result.model_copy(
                 update={"limitations": (*result.limitations, NO_ANOMALY_NO_HYPOTHESIS)}
             )

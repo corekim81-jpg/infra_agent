@@ -4,8 +4,10 @@
 - `check`: 활성화된 데이터 소스(Prometheus, Loki, Tempo)의 연결 상태를 점검합니다.
 - `discover`: 지표·라벨·최신성을 탐색해 `var/discovery/`에 보고서를 저장합니다.
 - `catalog`: 조회 카탈로그 파일을 검증하고, `--execute` 시 각 조회를 Prometheus에 실행해 점검합니다.
-- `ask`: 질문에 답합니다. 현재 Server Agent(k3d 노드·Pod·컨테이너 자원)만 동작하며,
-  설정에 따라 모델로 질문 해석·원인 후보를 보완합니다(`--no-llm`으로 끌 수 있음).
+- `ask`: 질문에 답합니다(Server·Kubernetes·Service·DB·Network Agent). 설정에 따라 모델로 질문
+  해석·원인 후보를 보완합니다(`--no-llm`으로 끌 수 있음).
+- `eval`: 대표 질문 평가 세트를 실행해 결정적 평가 기준으로 채점하고 `var/eval/`에 보고서를
+  저장합니다.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -26,14 +29,26 @@ from infra_agent.datasources.errors import DataSourceError
 from infra_agent.datasources.probe import SourceStatus, check_sources
 from infra_agent.datasources.prometheus import PrometheusClient
 from infra_agent.discovery import DiscoveryOptions, discover, write_report
+from infra_agent.evaluation import (
+    EvalSetError,
+    QuestionResult,
+    RunInfo,
+    load_eval_set,
+    render_summary,
+    run_eval,
+    select,
+)
+from infra_agent.evaluation import write_report as write_eval_report
 from infra_agent.orchestration.runner import answer_question
 from infra_agent.schemas import AgentStatus, TargetKind
 from infra_agent.security import configure_logging, redact
-from infra_agent.timeutil import parse_duration
+from infra_agent.timeutil import parse_duration, utc_now
 
 EXIT_OK = 0
 EXIT_UNAVAILABLE = 1
 EXIT_CONFIG_ERROR = 2
+EXIT_EVAL_FAILED = 3
+"""`eval`: 평가는 실행됐지만 실패한 기준이 있음 (데이터 소스 사용 불가 1과 구분)."""
 
 
 def _add_config_arg(parser: argparse.ArgumentParser) -> None:
@@ -87,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cat.add_argument("--range", dest="range_", default="5m", help="범위 구간 값 (기본: 5m)")
 
-    ask = sub.add_parser("ask", help="질문에 답합니다 (현재: 모델 없이 Server Agent)")
+    ask = sub.add_parser("ask", help="질문에 답합니다")
     _add_config_arg(ask)
     ask.add_argument("question", help='질문 (예: "현재 서버 상태가 어때?")')
     ask.add_argument("--range", dest="range_", default=None, help="분석 구간 (예: 30m, 1h)")
@@ -101,6 +116,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="근거에 실행한 조회식과 제외된 모델 원인 후보(진단용) 표시",
     )
     ask.add_argument(
+        "--no-llm", action="store_true", help="모델을 호출하지 않고 규칙·코드 판정만 사용"
+    )
+
+    ev = sub.add_parser("eval", help="대표 질문 평가 세트를 실행해 답변 품질을 채점합니다")
+    _add_config_arg(ev)
+    ev.add_argument(
+        "--eval-set",
+        default="config/eval/questions.yaml",
+        help="평가 세트 경로 (기본: config/eval/questions.yaml)",
+    )
+    ev.add_argument(
+        "--output-dir", default="var/eval", help="보고서 저장 위치 (기본: var/eval, 커밋 금지)"
+    )
+    ev.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="이 id(또는 앞부분)의 질문만 평가. 여러 번 지정 가능 (예: --only q3)",
+    )
+    ev.add_argument(
         "--no-llm", action="store_true", help="모델을 호출하지 않고 규칙·코드 판정만 사용"
     )
     return parser
@@ -327,6 +363,86 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     return EXIT_UNAVAILABLE if failed else EXIT_OK
 
 
+def _cmd_eval(args: argparse.Namespace) -> int:
+    settings = _load(args.config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    if not settings.datasources.prometheus.enabled:
+        print("Prometheus가 비활성화되어 있어 평가할 수 없습니다.", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    if not settings.catalog.path:
+        print("카탈로그 경로(catalog.path)가 설정되지 않았습니다.", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    try:
+        catalog = load_catalog(settings.catalog.path)
+        eval_set = load_eval_set(args.eval_set)
+        questions = select(eval_set, args.only)
+    except (CatalogError, EvalSetError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    use_llm = not args.no_llm
+    started = utc_now()
+    print(
+        f"질문 {len(questions)}개를 평가합니다 (모델 {'사용' if use_llm else '사용 안 함'})...",
+        file=sys.stderr,
+    )
+    results = asyncio.run(run_eval(questions, settings, catalog, use_llm=use_llm))
+    provider = next(
+        (r.bundle.llm_name for r in results if r.bundle is not None and r.bundle.llm_name), None
+    )
+    info = RunInfo(
+        started_at=started,
+        profile=settings.profile.value,
+        eval_set=args.eval_set,
+        use_llm=use_llm,
+        llm_provider=provider,
+        data_policy=settings.llm.data_policy.value,
+    )
+    print(render_summary(results))
+    out_dir = Path(args.output_dir)
+    if not _inside_var(out_dir):
+        print(
+            f"경고: 보고서 위치({out_dir})가 Git 제외 폴더(var/) 밖입니다. 실제 데이터가 커밋되지 "
+            "않도록 주의하세요.",
+            file=sys.stderr,
+        )
+    try:
+        md_path, json_path = write_eval_report(results, info, out_dir)
+    except OSError as exc:
+        print(f"보고서를 저장하지 못했습니다: {exc}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    print(f"\n보고서 저장: {md_path}")
+    print(f"원본 데이터: {json_path}")
+    print("주의: 실제 환경 데이터가 포함되어 있으므로 저장소에 커밋하지 마세요.")
+    if _all_unavailable(results):
+        print(
+            "모든 질문에서 분석이 실패했습니다. 데이터 소스 연결(SSH 터널 등)을 확인하세요 "
+            "(infra-agent check).",
+            file=sys.stderr,
+        )
+        return EXIT_UNAVAILABLE
+    return EXIT_OK if all(r.passed for r in results) else EXIT_EVAL_FAILED
+
+
+def _inside_var(path: Path) -> bool:
+    """보고서 위치가 작업 폴더의 var/(Git 제외) 안인지. Windows는 대소문자를 구분하지 않음."""
+    base = os.path.normcase(str((Path.cwd() / "var").resolve()))
+    target = os.path.normcase(str(path.resolve()))
+    return target == base or target.startswith(base + os.sep)
+
+
+def _all_unavailable(results: Sequence[QuestionResult]) -> bool:
+    """모든 질문이 실행 오류이거나 모든 에이전트가 실패했는지 (평가 실패가 아니라 연결 문제)."""
+
+    def down(r: QuestionResult) -> bool:
+        if r.error is not None:
+            return True
+        runs = r.bundle.results if r.bundle is not None else ()
+        return bool(runs) and all(x.status is AgentStatus.FAILED for x in runs)
+
+    return bool(results) and all(down(r) for r in results)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     configure_logging("WARNING")
@@ -340,6 +456,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_catalog(args)
     if args.command == "ask":
         return _cmd_ask(args)
+    if args.command == "eval":
+        return _cmd_eval(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 

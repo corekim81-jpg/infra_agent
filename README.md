@@ -206,8 +206,12 @@ infra-agent ask --config config/local.yaml "오류가 증가한 시간대의 로
 infra-agent ask --config config/local.yaml "DB 커넥션 풀이 부족하거나 쿼리가 느려진 징후가 있어?"
 infra-agent ask --config config/local.yaml "네트워크 패킷 드롭이나 DNS 문제가 있어?"
 infra-agent ask --config config/local.yaml "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘"
+infra-agent ask --config config/local.yaml "직전 30분과 비교해서 현재 상태가 어떻게 달라졌어?"   # 분야 미지정 비교 → 서버 ∥ (서비스 → DB)
 #   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --json  --no-llm
 #         --show-queries (조회식과, 검증에 실패해 제외된 모델 원인 후보를 진단용으로 표시)
+
+# 대표 질문 7개 품질 평가 → 질문×기준 표 출력, 상세 보고서는 var/eval/ (실제 데이터 포함, 커밋 금지)
+infra-agent eval --config config/local.yaml [--no-llm] [--only q3]
 
 # 테스트
 python -m pytest -m "not live"
@@ -217,7 +221,6 @@ python -m pytest -m "not live"
 
 이후 단계에서 다음 항목을 추가합니다.
 
-- 대표 질문 품질 평가 (README 대표 질문 7개)
 - Kubernetes API 읽기 계정 연동 (Pending 사유, 종료 사유, 이벤트)
 - 컨테이너 실행 및 Kubernetes 배포 방법
 
@@ -234,6 +237,8 @@ python -m pytest -m "not live"
 - 비밀정보 및 외부 데이터 처리
 
 가상 데이터를 사용하는 테스트와 실제 데이터 소스에 연결하는 테스트를 구분합니다.
+
+대표 질문 7개의 답변 품질은 `infra-agent eval`로 평가합니다. 에이전트 선택, 근거 일치, 실패·데이터 부족 표시, 인과 단정 금지 등 결정적 기준은 코드로 판정하고, 답변 문장의 품질은 사람이 검토합니다. 평가 기준과 실행 기록은 [docs/evaluation.md](docs/evaluation.md)를 봅니다.
 
 ## 초기 범위와 향후 확장
 

@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 11단계 진행 중 (#27).** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27)가 있습니다.
-> Kubernetes API 연동(8b)과 대표 질문 품질 평가(12b)는 아직 없습니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 12b단계 (#31) 평가 기록 완료.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29)이 있습니다.
+> Kubernetes API 연동(8b)은 아직 없습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -50,7 +50,7 @@ Linux(Python 3.11, 3.12)에서 `live`를 제외한 명령을 실행해 통과를
 
 ## 3. 디렉터리 구조
 
-현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `config/catalog/otel-demo.yaml`, `src/infra_agent/{config,schemas,security,datasources,discovery,catalog,tools,agents,orchestration,answer}`, `cli.py`, `timeutil.py`, `tests/{unit,live}`, `tests/fakes.py`, `tests/expr_prom.py`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다. (`datasources/`에는 prometheus·loki·tempo와 공통 HTTP·연결 점검만 있습니다.)
+현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `config/catalog/otel-demo.yaml`, `config/eval/questions.yaml`, `src/infra_agent/{config,schemas,security,datasources,discovery,catalog,tools,agents,orchestration,answer,evaluation,llm}`, `cli.py`, `timeutil.py`, `tests/{unit,live}`, `tests/fakes.py`, `tests/expr_prom.py`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다. (`datasources/`에는 prometheus·loki·tempo와 공통 HTTP·연결 점검만 있습니다.)
 
 ```text
 infra_agent/
@@ -58,11 +58,13 @@ infra_agent/
 ├─ CLAUDE.md
 ├─ docs/
 │  ├─ architecture.md
-│  └─ development.md
+│  ├─ development.md
+│  └─ evaluation.md             # 대표 질문 평가 기준·실행 기록
 ├─ pyproject.toml
 ├─ config/
 │  ├─ example.yaml              # 비밀값·내부 주소 없는 설정 예시
-│  └─ catalog/                  # 환경별 조회 카탈로그 (예: otel-demo.yaml)
+│  ├─ catalog/                  # 환경별 조회 카탈로그 (예: otel-demo.yaml)
+│  └─ eval/questions.yaml       # 대표 질문 평가 세트
 ├─ src/infra_agent/
 │  ├─ config/                   # 설정 로딩·검증
 │  ├─ schemas/                  # AnalysisContext, AgentResult 등 공통 형식
@@ -72,16 +74,16 @@ infra_agent/
 │  ├─ tools/                    # 읽기 전용 도구 정의, 에이전트별 허용 목록
 │  ├─ units.py                  # 단위 표시 형식 (답변·모델 관측 데이터 공통)
 │  ├─ analysis/                 # 기준 구간 비교, 임계값 판정 등 결정적 분석
-│  ├─ agents/                   # base(인터페이스), common(수집·결과 정리), server, kubernetes, service, (이후) network, db
+│  ├─ agents/                   # base(인터페이스), common(수집·결과 정리), upstream(선행 결과), server, kubernetes, service, db, network
 │  │  └─ prompts.py             # 역할별 지침
 │  ├─ orchestration/            # 질문 해석, 실행 계획(plan), 실행기(executor), runner
-│  ├─ answer/                   # 결과 종합, 근거 검증, 답변 렌더링
+│  ├─ answer/                   # 결과 종합, 분야 간 교차 확인(cross), 답변 렌더링
+│  ├─ evaluation/               # 대표 질문 평가: 평가 세트, 결정적 평가 기준, 실행·보고서
 │  └─ interfaces/               # cli, (이후) http api
 ├─ tests/
 │  ├─ unit/
 │  ├─ contract/                 # 데이터 소스 응답 형식 처리 (가상 응답)
 │  ├─ live/                     # 개발 서버 실제 연동 (live 마커, 선택 실행)
-│  ├─ eval/                     # 대표 운영 질문 답변 품질 평가
 │  └─ fixtures/synthetic/       # 테스트용 가상 데이터만
 ├─ var/                         # 탐색 보고서 등 로컬 산출물 (Git 제외)
 └─ deploy/                      # Containerfile, Kubernetes 매니페스트, RBAC
@@ -104,7 +106,7 @@ infra_agent/
 | 단위 | 시간 범위 정규화, 에이전트 선택, 판정 로직, 예산·타임아웃·재시도, 마스킹 | 가상 | 항상 |
 | 계약 | 데이터 소스 응답 파싱, 빈 결과·오류·지연 데이터 처리 | 가상 응답 fixture | 항상 |
 | 개발 서버 연동 | 실제 Prometheus/Loki/Tempo(/Kubernetes) 연결, 가용성 점검, 탐색 | 실제(읽기 전용) | `live` 마커, `INFRA_AGENT_LIVE_TESTS=1`, SSH 터널 실행 중 ([environment.md](environment.md) 5절) |
-| 품질 평가 | 대표 질문에 대한 에이전트 선택, 근거 일치, 금지 주장 여부 | 가상 시나리오 또는 실제 환경 | 수동 또는 별도 작업 |
+| 품질 평가 | 대표 질문에 대한 에이전트 선택, 근거 일치, 금지 주장 여부 ([evaluation.md](evaluation.md)) | 가상(데이터 없는 Prometheus, `tests/unit/test_evaluation.py`) 또는 실제 환경(`infra-agent eval`) | 가상은 항상, 실제는 수동 |
 
 ### 5.1 가상 데이터와 실제 데이터 구분
 
@@ -112,17 +114,9 @@ infra_agent/
 - 실제 운영 데이터(응답 원문, 로그, 호스트 정보)는 저장소에 커밋하지 않습니다.
 - 연동 테스트와 품질 평가 결과를 기록할 때는 사용한 데이터가 가상인지 실제인지 표시합니다.
 
-### 5.2 품질 평가 기준 (초안)
+### 5.2 품질 평가 기준
 
-README.md의 대표 질문마다 다음을 확인합니다.
-
-- 기대한 에이전트만 선택되었는가 (불필요한 확장 여부)
-- 답변의 수치와 주장이 실제 조회 결과(근거 ID)와 일치하는가
-- 데이터가 없거나 오래된 경우 "정상"이라고 답하지 않는가
-- 동시 발생을 인과관계로 단정하지 않는가
-- 시간 범위와 대상이 답변에 명시되고 조회에 반영되었는가
-- 부분 실패 시 확인하지 못한 영역을 표시하는가
-- 비밀값이 답변·로그에 없는가
+평가 세트, 결정적 평가 기준, 사람 검토 항목, 실행 방법과 기록은 [evaluation.md](evaluation.md)를 기준으로 합니다.
 
 ## 6. 단계별 구현 계획
 
@@ -149,8 +143,8 @@ README.md의 대표 질문마다 다음을 확인합니다.
 | 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 완료 (#23, PR #24; 개발 서버 live 4건 통과 2026-09-30, 병합 후 느린 트레이스 검색식 포함 재확인) |
 | 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 완료 (#25, PR #26; 개발 서버 live 3건 통과 2026-09-30) |
 | 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 완료 (#27, PR #28; 개발 서버 live 2건 통과 2026-09-30) |
-| 12 | 분야 간 교차 분석 | Service 이상 대상 추출, Network 집중 확인, Coordinator 교차 확인(연결·미연결·미확인 구분, 동시 발생 원인 후보) | "네트워크인지 DB인지" 질문에 분야별 연결 결과 답변 (가상 + live) | 8–11 | 진행 중 (#29) |
-| 12b | 대표 질문 품질 평가 | README 대표 질문 평가 세트, 평가 기준, 실행 기록 | 대표 질문 7개 평가 기록 | 12 | 계획 |
+| 12 | 분야 간 교차 분석 | Service 이상 대상 추출, Network 집중 확인(서비스 이상 최고 시점 기준), Coordinator 교차 확인(연결·미연결·미확인 구분, 동시 발생 원인 후보) | "네트워크인지 DB인지" 질문에 분야별 연결 결과 답변 (가상 + live) | 8–11 | 완료 (#29, PR #30; 개발 서버 live 3건 통과 2026-10-01) |
+| 12b | 대표 질문 품질 평가 | 평가 세트(`config/eval/questions.yaml`), 결정적 평가 기준(`evaluation`), `eval` 명령, [evaluation.md](evaluation.md) | 대표 질문 7개 평가 기록 | 12 | 완료 (#31, PR #32; 개발 서버 평가 모델 사용·미사용 각 7/7 통과, 사람 검토 반영 2026-10-01) |
 | 13 | 배포·확장 | Containerfile(Rocky Linux 9), Kubernetes 배포·RBAC, MCP 경로, HTTP API | 클러스터 내부 읽기 전용 실행 확인 | 12 | 계획 |
 
 8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 개발 환경(OTel Demo)에서만 `full`로 결정되었습니다(2026-09-29). 운영 환경의 정책은 결정 전까지 `none`을 사용합니다.
