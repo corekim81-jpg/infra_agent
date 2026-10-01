@@ -125,6 +125,18 @@ def ungrounded_numbers(statement: str, observed: str) -> list[str]:
     return [n for n in dict.fromkeys(_NUMBER_RE.findall(statement)) if float(n) not in known]
 
 
+def question_numbers(ctx: AnalysisContext) -> str:
+    """질문 문장과 분석·기준 구간 길이(분·시간)에 나오는 수치 (원인 후보 수치 검증에서 인정)."""
+    parts = [ctx.question]
+    for tr in (ctx.time_range, ctx.baseline_range):
+        if tr is not None:
+            minutes = tr.duration.total_seconds() / 60
+            parts.append(f"{minutes:g}")
+            if minutes % 60 == 0:
+                parts.append(f"{minutes / 60:g}")
+    return " ".join(parts)
+
+
 def numbers_grounded(statement: str, observed: str) -> bool:
     """문장 속 모든 수치가 관측 데이터 문자열에 그대로 있는지 확인합니다."""
     return not ungrounded_numbers(statement, observed)
@@ -190,13 +202,15 @@ class AgentExplainer:
 
         known = {e.evidence_id for e in result.evidence}
         truncated = truncated_evidence([result])
+        # 질문·분석 구간에서 온 수치("직전 30분")는 관측값이 아니어도 근거 없는 수치가 아님
+        grounded_text = f"{observed}\n{question_numbers(ctx)}"
         for h in parsed.hypotheses:
             ids = tuple(dict.fromkeys(h.evidence_ids))
             reasons: list[str] = []
             unknown = [i for i in ids if i not in known]
             if not ids or unknown:
                 reasons.append("근거 ID 불일치: " + (", ".join(unknown) or "(없음)"))
-            missing = ungrounded_numbers(h.statement, observed)
+            missing = ungrounded_numbers(h.statement, grounded_text)
             if missing:
                 reason = "관측 데이터에 없는 수치: " + ", ".join(missing)
                 cut = [i for i in ids if i in truncated]

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
+from infra_agent.agents.common import asks_cause
 from infra_agent.agents.server import LIMIT_NEAR_CHECK
 from infra_agent.answer.cross import DEFAULT_STALE_SECONDS, cross_check
 from infra_agent.llm.policy import sample_rows
@@ -149,7 +150,13 @@ def synthesize(
     interp: Interpretation,
     results: Sequence[AgentResult],
     stale_after_seconds: float = DEFAULT_STALE_SECONDS,
+    question: str = "",
 ) -> FinalAnswer:
+    """에이전트 결과를 답변으로 종합합니다.
+
+    분야 간 교차 확인 요약은 서비스 이상 대상이 있거나 질문이 원인을 물을 때만 요약에 붙입니다
+    (단순 비교 질문의 요약을 원인 분석 문장으로 채우지 않음). 교차 확인 줄은 항상 답변에 둡니다.
+    """
     change_first = _compares(interp, results)
     facts = sorted(
         (f for r in results for f in r.findings if f.kind is FindingKind.FACT),
@@ -201,7 +208,8 @@ def synthesize(
     cross = cross_check(results, stale_after_seconds)
     limitations.extend(x for x in cross.limitations if x not in limitations)
     summary = _summary(facts, results, interp)
-    if cross.summary:
+    has_issues = bool(cross.lines) and not cross.lines[0].startswith("서비스 이상 대상: 없음")
+    if cross.summary and (has_issues or asks_cause(question)):
         summary += " " + cross.summary
     return FinalAnswer(
         request_id=request_id,

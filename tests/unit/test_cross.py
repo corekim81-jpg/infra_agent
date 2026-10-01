@@ -385,7 +385,10 @@ def test_no_issues_failed_and_empty_domains() -> None:
         "DB·캐시: 분석을 완료하지 못해 확인하지 못함",
     )
     assert cross.correlations == ()
-    assert "서비스 이상 대상이 없어" in cross.summary
+    assert cross.summary == (
+        "분야 간 교차 확인: 서비스 오류율·응답 지연 이상이 확인되지 않아 원인 분야를 가리지 "
+        "않았습니다. 네트워크, DB·캐시 분야는 확인하지 못했습니다."
+    )
 
     issues_only = cross_check([SERVICE, failed_db])
     assert issues_only.summary.endswith("DB·캐시 분야는 확인하지 못했습니다.")
@@ -507,3 +510,22 @@ def test_summary_names_domains_without_results() -> None:
         "DB·캐시: 판단에 사용할 결과가 없어 확인하지 못함 (사유는 한계 참고)"
         in answer.unverified_areas
     )
+
+
+def test_no_issue_cross_summary_answers_cause_questions_only() -> None:
+    """live 평가(2026-10-01): 원인 질문에는 직접 답하고, 단순 비교 질문 요약은 채우지 않음."""
+    quiet = _result(AgentName.SERVICE, SERVICE.findings[2:], SERVICE.evidence)
+    interp = interpret(
+        "서비스 응답이 느려진 원인이 네트워크인지 DB인지 분석해 줘.", NOW, timedelta(minutes=30)
+    )
+    cause = synthesize("r4", interp, [quiet, NETWORK_OK, DB], question="원인이 네트워크인지 DB인지")
+    assert (
+        "분야 간 교차 확인: 서비스 오류율·응답 지연 이상이 확인되지 않아 원인 분야를 가리지 "
+        "않았습니다. 네트워크도 확인한 항목에서 기준을 넘는 이상이 없습니다. "
+        "다른 분야 이상(DB·캐시 3건)은 서비스 영향과 연결하지 않았습니다."
+    ) in cause.summary
+    compare = synthesize("r5", interp, [quiet, NETWORK_OK, DB], question="직전 30분과 비교해서")
+    assert "분야 간 교차 확인" not in compare.summary
+    assert compare.cross_checks  # 교차 확인 줄은 그대로 답변에 있음
+    issues = synthesize("r6", interp, [SERVICE, NETWORK_OK, DB], question="직전 30분과 비교해서")
+    assert "분야 간 교차 확인: 서비스 이상 대상 2개 중" in issues.summary  # 이상 대상이 있으면 붙임

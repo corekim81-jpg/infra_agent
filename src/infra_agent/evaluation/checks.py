@@ -196,7 +196,7 @@ def check_sources(q: EvalQuestion, b: AnswerBundle, s: Settings) -> CheckResult:
             reason += "; 남은 시간이 부족해 상세 조회를 생략함(한계 참고)"
         return _fail(name, label, reason)
     empty = present - with_rows
-    detail = _names(present) + (f" (결과 없음: {_names(empty)})" if empty else "")
+    detail = ", ".join(f"{src}(모든 결과 없음)" if src in empty else src for src in sorted(present))
     return _ok(name, label, detail)
 
 
@@ -252,7 +252,8 @@ def check_causality(q: EvalQuestion, b: AnswerBundle, s: Settings) -> CheckResul
     no_caveat = [f for f in a.correlations if "인과는 확인되지 않음" not in f.statement]
     if no_caveat:
         return _fail(name, label, f"동시 발생 원인 후보에 인과 미확인 표시 없음 {len(no_caveat)}건")
-    return _ok(name, label, f"원인 후보 {len(a.hypotheses) + len(a.correlations)}건 (모두 추정)")
+    count = len(a.hypotheses) + len(a.correlations)
+    return _ok(name, label, f"원인 후보 {count}건 (모두 추정)" if count else "원인 후보 없음")
 
 
 def check_cross(q: EvalQuestion, b: AnswerBundle, s: Settings) -> CheckResult:
