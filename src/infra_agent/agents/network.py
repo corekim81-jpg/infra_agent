@@ -20,6 +20,12 @@
 - DNS 질의가 0이면 Hubble DNS 가시성 미적용 가능성을 한계에 적습니다(실제 질의 0으로 단정하지 않음).
 - Hubble 이벤트 유실이 있으면 Hubble 기반 결과가 불완전하다고 한계에 적습니다.
 - 결과가 없거나 오래된 데이터로는 "정상"이라고 판단하지 않습니다.
+
+Service 이상 대상 집중 확인 (선행 Service 결과가 있을 때)
+- Service Agent가 이상으로 판정한 서비스와 이름이 같은 Hubble 워크로드의 나가는·들어오는 흐름
+  판정 비율(현재 5분)과 구간 내 드롭(비장애성 사유 제외)을 서비스별로 표시합니다. 워크로드 쌍으로
+  집계하면 시계열이 매우 많아지므로 방향별로 한쪽 워크로드만 집계합니다.
+- 같은 이름의 워크로드가 흐름에 없으면 "연결하지 못함"으로 한계에 적습니다(문제없음으로 보지 않음).
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from infra_agent.agents.common import (
 )
 from infra_agent.agents.explain import AgentExplainer
 from infra_agent.agents.formatting import count_text, fmt_value, window_text
+from infra_agent.agents.upstream import ServiceIssue, service_issues
 from infra_agent.config.settings import AnalysisConfig
 from infra_agent.schemas import (
     AgentName,
@@ -76,12 +83,33 @@ HUBBLE_KEYS = frozenset(
     }
 )
 UNKNOWN_PEER = "외부·미확인"
+FOCUS_NOTE = (
+    "Service 이상 대상은 이름이 같은 Hubble 워크로드(출발 또는 도착)로 연결해 확인함. 서비스 "
+    "이름과 워크로드 이름이 다르면 연결되지 않음. 흐름 판정 비율은 드롭 사유를 구분하지 않음"
+    "(비장애성 사유 포함)"
+)
+FOCUS_FILTER_NOTE = (
+    "대상 필터가 있으면 Service 이상 대상의 구간 내 드롭은 도착 기준 결과에서만 찾으므로, 그 "
+    "대상에서 다른 네임스페이스로 나가는 드롭은 빠질 수 있음"
+)
 DNS_ZERO_NOTE = (
     "network.dns_query_rate: DNS 질의가 0건/초로 집계됨. Hubble DNS 지표는 DNS 가시성(L7 DNS "
     "프록시 정책)이 적용된 흐름만 집계하므로, 실제 DNS 질의가 없다는 뜻이 아닐 수 있음"
 )
 BAD_VERDICTS = frozenset({"DROPPED", "ERROR"})
 """문제로 보는 흐름 판정 값 (Hubble verdict)."""
+
+
+@dataclass(frozen=True)
+class _Direction:
+    """Service 이상 대상 집중 확인: 한 방향의 워크로드별 흐름 합계와 드롭·오류 판정 흐름."""
+
+    result: ToolResult
+    totals: dict[str, float]
+    bad: dict[str, float]
+    namespaces: dict[str, set[str]]
+    labeled: bool
+    fresh: bool
 
 
 @dataclass(frozen=True)
@@ -160,6 +188,7 @@ class NetworkAgent:
         self._cfg = analysis
         self._explainer = explainer
         self._scope_suffix = ""
+        self._drops: tuple[ToolResult, list[tuple[dict[str, str], float]]] | None = None
 
     async def run(
         self,
@@ -167,8 +196,9 @@ class NetworkAgent:
         ctx: AnalysisContext,
         upstream: Mapping[str, AgentResult] | None = None,
     ) -> AgentResult:
-        """`upstream`(Service Agent 결과)은 아직 쓰지 않습니다(교차 분석은 12단계)."""
+        """`upstream`에 Service Agent 결과가 있으면 그 이상 서비스를 집중 확인합니다."""
         targets = context_targets(ctx)
+        self._drops = None
         col = Collector()
         col.limit(SCOPE_NOTE)
         # Hubble 항목의 네임스페이스·워크로드 필터는 도착(destination) 기준입니다.
@@ -180,6 +210,9 @@ class NetworkAgent:
         for check in COUNT_CHECKS:
             await self._count(check, ctx, targets, col)
         await self._verdicts(ctx, targets, col)
+        issues = service_issues((upstream or {}).values())
+        if issues:
+            await self._service_focus(ctx, targets, issues, col)
         await self._tcp_rst(ctx, targets, col)
         await self._dns(ctx, targets, col)
         result = finish(task, self.name, col)
@@ -280,6 +313,8 @@ class NetworkAgent:
         if fetched is None:
             return
         result, rows = fetched
+        if check.key == "network.drops_increase":
+            self._drops = fetched
         scope = window_text(ctx)
         flow = check.key in HUBBLE_KEYS
         benign_reasons = {r.upper() for r in self._cfg.benign_drop_reasons}
@@ -409,6 +444,190 @@ class NetworkAgent:
                 basis=JudgementBasis.THRESHOLD,
             )
         )
+
+    def _is_benign_drop(self, labels: Mapping[str, str]) -> bool:
+        reasons = {r.upper() for r in self._cfg.benign_drop_reasons}
+        return labels.get("reason", "").upper() in reasons
+
+    async def _direction(
+        self,
+        key: str,
+        side: str,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+    ) -> _Direction | None:
+        """한 방향(나가는·들어오는) 워크로드별 흐름 합계와 드롭·오류 판정 흐름."""
+        fetched = await self._fetch(key, ctx, QueryMode.CURRENT, targets, col)
+        if fetched is None:
+            return None
+        result, rows = fetched
+        totals: dict[str, float] = {}
+        bad: dict[str, float] = {}
+        namespaces: dict[str, set[str]] = {}
+        for labels, value in rows:
+            name = labels.get(f"{side}_workload")
+            if not name:
+                continue
+            totals[name] = totals.get(name, 0.0) + value
+            spaces = namespaces.setdefault(name, set())
+            if labels.get(f"{side}_namespace"):
+                spaces.add(labels[f"{side}_namespace"])
+            if labels.get("verdict", "").upper() in BAD_VERDICTS:
+                bad[name] = bad.get(name, 0.0) + value
+        return _Direction(
+            result,
+            totals,
+            bad,
+            namespaces,
+            labeled=bool(totals),
+            fresh=is_fresh(result, self._cfg),
+        )
+
+    def _direction_text(self, word: str, d: _Direction | None, name: str) -> tuple[str, bool, bool]:
+        """방향별 문구, 기준 초과 여부, 비율 판정 여부.
+
+        결과가 없으면 "흐름 없음"이라고 단정하지 않습니다.
+        """
+        if d is None:
+            return f"{word} 흐름은 확인하지 못함", False, False
+        if not d.labeled:
+            return f"{word} 흐름은 워크로드 라벨이 없어 확인하지 못함", False, False
+        total = d.totals.get(name, 0.0)
+        if name not in d.totals:
+            return f"{word} 흐름 결과 없음(같은 이름의 워크로드 시계열 없음)", False, False
+        if total < max(self._cfg.min_request_rate, 1e-12):
+            return f"{word} 흐름 {total:.3g}건/초(흐름이 적어 비율을 판정하지 않음)", False, False
+        ratio = d.bad.get(name, 0.0) / total
+        warn = self._cfg.flow_drop_ratio_warning
+        text = f"{word} 흐름 {total:.3g}건/초(드롭·오류 판정 {fmt_value(ratio, 'ratio')}"
+        if ratio >= warn:
+            return text + f", 기준 {fmt_value(warn, 'ratio')} 이상)", True, True
+        return text + ")", False, True
+
+    def _drop_text(self, name: str, spaces: set[str], scope: str) -> tuple[str, str | None]:
+        """구간 내 드롭 문구와 근거 ID. 드롭은 드롭 판정(경고)에 이미 있으므로 다시 세지 않음."""
+        drops = self._drops
+        if drops is None:
+            return "구간 내 드롭은 확인하지 못함", None
+        if not is_fresh(drops[0], self._cfg):
+            return "구간 내 드롭은 데이터 최신성을 확인하지 못해 판단하지 않음", None
+        hits = sorted(
+            (
+                (labels, v)
+                for labels, v in drops[1]
+                if v >= 0.5
+                and not self._is_benign_drop(labels)
+                and any(
+                    labels.get(f"{side}_workload") == name
+                    and (not spaces or labels.get(f"{side}_namespace") in spaces)
+                    for side in ("source", "destination")
+                )
+            ),
+            key=lambda r: -r[1],
+        )
+        if not hits:
+            return f"{scope} 드롭 없음(비장애성 사유 제외)", drops[0].evidence_id
+        parts = [
+            f"{network_entity(labels, flow=True).name} {count_text(v)}"
+            f"(사유 {labels.get('reason') or '?'})"
+            for labels, v in hits[: self._cfg.top_n]
+        ]
+        return (
+            f"{scope} 드롭 " + ", ".join(parts) + " (Hubble 패킷 드롭 판정과 같은 결과)",
+            drops[0].evidence_id,
+        )
+
+    async def _service_focus(
+        self,
+        ctx: AnalysisContext,
+        targets: Mapping[TargetKind, str],
+        issues: Mapping[str, ServiceIssue],
+        col: Collector,
+    ) -> None:
+        """Service 이상 대상과 이름이 같은 워크로드의 나가는·들어오는 흐름 판정 비율과 구간 내 드롭.
+
+        워크로드 쌍으로 집계하면 시계열이 매우 많아지므로 방향별로 한쪽 워크로드만 집계합니다.
+        경고는 흐름 판정 비율로만 정합니다(구간 내 드롭은 드롭 판정에서 이미 경고로 셈).
+        """
+        egress = await self._direction(
+            "network.workload_egress_by_verdict", "source", ctx, targets, col
+        )
+        ingress = await self._direction(
+            "network.workload_ingress_by_verdict", "destination", ctx, targets, col
+        )
+        directions = [d for d in (egress, ingress) if d is not None]
+        if not directions:
+            return
+        if not any(d.labeled for d in directions):
+            col.limit(
+                "network.workload_*_by_verdict: 흐름 결과에 워크로드 라벨이 없어 "
+                "Service 이상 대상을 확인하지 못함"
+            )
+            return
+        if not all(d.fresh for d in directions):
+            col.limit(
+                "network.workload_*_by_verdict: 데이터 최신성을 확인하지 못해 Service 이상 대상을 "
+                "판단하지 않음"
+            )
+            return
+        col.limit(FOCUS_NOTE)
+        if self._scope_suffix:
+            col.limit(FOCUS_FILTER_NOTE)
+        scope = window_text(ctx)
+        unmatched: list[str] = []
+        names = list(issues)
+        for name in names[: self._cfg.top_n]:
+            seen = [d for d in directions if name in d.totals]
+            if not seen:
+                unmatched.append(name)
+                continue
+            out_text, out_bad, out_judged = self._direction_text("나가는", egress, name)
+            in_text, in_bad, in_judged = self._direction_text("들어오는", ingress, name)
+            space_set: set[str] = set().union(*(d.namespaces.get(name, set()) for d in seen))
+            spaces = sorted(space_set)
+            drop_text, drop_id = self._drop_text(name, space_set, scope)
+            # "결과 없음" 같은 부정 판단에도 근거가 있도록 조회한 방향의 근거를 모두 붙임
+            evidence = [d.result.evidence_id for d in directions]
+            if drop_id:
+                evidence.append(drop_id)
+            # 비율도 드롭도 판정하지 못했으면 서비스 대상을 붙이지 않음(교차 확인에서 "이상 없음"
+            # 근거로 쓰이지 않게 함)
+            judged = out_judged or in_judged or drop_id is not None
+            if len(spaces) > 1:
+                col.limit(
+                    f"Service 이상 대상 {name}: 이름이 같은 워크로드가 여러 네임스페이스"
+                    f"({', '.join(spaces)})에 있어 흐름을 합쳐 계산함"
+                )
+            where = f" [{spaces[0]}]" if len(spaces) == 1 else ""
+            col.findings.append(
+                Finding(
+                    kind=FindingKind.FACT,
+                    statement=(
+                        f"Service 이상 대상 {issues[name].label}의 네트워크{where}(현재, 5분): "
+                        f"{out_text}, {in_text}; {drop_text}"
+                    ),
+                    severity=Severity.WARNING if out_bad or in_bad else Severity.INFO,
+                    targets=(
+                        (TargetRef(kind=TargetKind.SERVICE, name=name, labels={"service": name}),)
+                        if judged
+                        else ()
+                    ),
+                    evidence_ids=tuple(evidence),
+                    basis=JudgementBasis.THRESHOLD,
+                )
+            )
+        if unmatched:
+            col.limit(
+                f"Service 이상 대상 {', '.join(unmatched)}은 Hubble 흐름의 출발·도착 워크로드에서 "
+                "같은 이름을 찾지 못해 네트워크 상태를 연결하지 못함"
+            )
+        skipped = names[self._cfg.top_n :]
+        if skipped:
+            col.limit(
+                f"Service 이상 대상 {len(names)}개 중 {self._cfg.top_n}개만 네트워크를 확인함"
+                f"(확인하지 않은 대상: {', '.join(skipped)})"
+            )
 
     async def _tcp_rst(
         self, ctx: AnalysisContext, targets: Mapping[TargetKind, str], col: Collector

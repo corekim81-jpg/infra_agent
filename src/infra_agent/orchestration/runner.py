@@ -308,7 +308,7 @@ async def answer_question(
             )
             report = await executor.run(plan, agents, ctx)
     results = list(report.results) if report else []
-    answer = synthesize(ctx.request_id, interp, results)
+    answer = synthesize(ctx.request_id, interp, results, settings.analysis.stale_after_seconds)
     return AnswerBundle(
         interp,
         ctx,

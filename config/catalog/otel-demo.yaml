@@ -333,6 +333,34 @@ items:
     target_labels: *hubble_targets
     evidence: {status: discovered, checked_at: 2026-09-29}
     caveats: [시계열 수가 많은 지표(탐색 시 약 1.5만)이므로 반드시 집계해서 조회]
+  network.workload_egress_by_verdict:
+    agent: network
+    source: prometheus
+    description: 출발 워크로드·판정(verdict)별 흐름 처리 증가율 (Service 이상 대상 집중 확인용, 나가는 흐름)
+    unit: flows/s
+    query: >-
+      sum by (verdict, source_namespace, source_workload)
+      (rate(hubble_flows_processed_total{{{selector}}}[{range}]))
+    requires_metrics: [hubble_flows_processed_total]
+    target_labels: {namespace: source_namespace, workload: source_workload}
+    evidence: {status: discovered, checked_at: 2026-09-30}
+    caveats:
+      - 워크로드 쌍으로 집계하면 시계열이 많아지므로(tcp_flags 워크로드 쌍 집계 약 1.4만) 한쪽 워크로드로만 집계
+      - 흐름 지표의 워크로드 라벨(source_workload) 존재는 개발 서버 live 확인 필요
+  network.workload_ingress_by_verdict:
+    agent: network
+    source: prometheus
+    description: 도착 워크로드·판정(verdict)별 흐름 처리 증가율 (Service 이상 대상 집중 확인용, 들어오는 흐름)
+    unit: flows/s
+    query: >-
+      sum by (verdict, destination_namespace, destination_workload)
+      (rate(hubble_flows_processed_total{{{selector}}}[{range}]))
+    requires_metrics: [hubble_flows_processed_total]
+    target_labels: {namespace: destination_namespace, workload: destination_workload}
+    evidence: {status: discovered, checked_at: 2026-09-30}
+    caveats:
+      - 워크로드 쌍으로 집계하면 시계열이 많아지므로 한쪽 워크로드로만 집계
+      - 흐름 지표의 워크로드 라벨(destination_workload) 존재는 개발 서버 live 확인 필요
   network.tcp_flags_rate:
     agent: network
     source: prometheus

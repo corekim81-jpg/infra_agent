@@ -289,6 +289,26 @@ async def test_stale_request_data_is_not_judged() -> None:
     assert any("오래되었거나 최신성을 확인하지 못해" in x for x in result.limitations)
 
 
+async def test_error_increase_without_compared_services_is_not_judged() -> None:
+    """비교할 서비스가 없으면(구간 평균 결과 없음) "증가한 대상 없음"이라고 하지 않음."""
+    ctx = _ctx(Intent.ANOMALY)
+    fake = FakeBackend()
+    _red(ctx, fake)
+    assert ctx.baseline_range is not None
+    for mode, at in (
+        (QueryMode.WINDOW_AVG, ctx.time_range.end),
+        (QueryMode.BASELINE_AVG, ctx.baseline_range.end),
+    ):
+        fake.add(_expr("service.error_ratio", ctx, mode), [], at=at)
+    result = await _run(ctx, fake, logs=False, traces=False)
+    assert not any(
+        f.statement.startswith("서비스 오류율(SERVER span): 비교 대상") for f in result.findings
+    )
+    assert (
+        "service.error_ratio: 직전 구간과 비교할 서비스 결과가 없어 오류율 증가를 판단하지 않음"
+    ) in result.limitations
+
+
 async def test_missing_logs_and_disabled_sources() -> None:
     ctx = _ctx()
     fake = FakeBackend()

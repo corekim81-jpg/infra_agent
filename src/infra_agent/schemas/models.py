@@ -294,6 +294,12 @@ class FinalAnswer(_Model):
     limitations: tuple[str, ...] = ()
     unverified_areas: tuple[str, ...] = ()
     next_checks: tuple[str, ...] = ()
+    cross_checks: tuple[str, ...] = ()
+    """분야 간 교차 확인 (Coordinator 코드 판정).
+
+    연결된 이상, 연결되지 않은 이상, 확인하지 못한 분야를 줄 단위로 적습니다."""
+    correlations: tuple[Finding, ...] = ()
+    """분야 간 동시 발생으로 연결한 원인 후보 (hypothesis, basis=correlation)."""
 
     @model_validator(mode="after")
     def _kinds(self) -> Self:
@@ -301,4 +307,9 @@ class FinalAnswer(_Model):
             raise ValueError("facts에는 fact만 포함할 수 있습니다")
         if any(f.kind is not FindingKind.HYPOTHESIS for f in self.hypotheses):
             raise ValueError("hypotheses에는 hypothesis만 포함할 수 있습니다")
+        if any(
+            f.kind is not FindingKind.HYPOTHESIS or f.basis is not JudgementBasis.CORRELATION
+            for f in self.correlations
+        ):
+            raise ValueError("correlations에는 basis=correlation인 hypothesis만 포함할 수 있습니다")
         return self

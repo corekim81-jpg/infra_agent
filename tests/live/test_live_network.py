@@ -7,14 +7,25 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 
 import pytest
 
 from infra_agent.answer.render import render_text
 from infra_agent.catalog import load_catalog
 from infra_agent.config import Settings, load_settings
+from infra_agent.datasources import PrometheusClient
 from infra_agent.orchestration.runner import answer_question
-from infra_agent.schemas import AgentName, AgentStatus
+from infra_agent.schemas import (
+    AgentName,
+    AgentStatus,
+    AnalysisContext,
+    Budget,
+    Intent,
+    TimeRange,
+)
+from infra_agent.timeutil import utc_now
+from infra_agent.tools import CatalogQueryTool, QueryMode, ToolBudget, value_rows
 
 pytestmark = pytest.mark.live
 
@@ -61,4 +72,40 @@ async def test_service_then_network_and_db(settings: Settings) -> None:
     assert network.status is AgentStatus.SUCCESS, [e.message for e in network.errors]
     assert db.status is AgentStatus.SUCCESS, [e.message for e in db.errors]
     assert bundle.answer.unverified_areas == ()
+    # 분야 간 교차 확인(#29): Service와 다른 분야가 함께 있으므로 항상 표시
+    assert bundle.answer.cross_checks
+    focus = [f.statement for f in network.findings if f.statement.startswith("Service 이상 대상")]
+    print(f"\nNetwork 집중 확인 {len(focus)}건, 교차 원인 후보 {len(bundle.answer.correlations)}건")
     print("\n" + render_text(bundle))
+
+
+async def test_workload_flow_labels(settings: Settings) -> None:
+    """방향별 워크로드 흐름 조회의 결과 수와 워크로드 라벨 존재를 출력합니다 (caveat 확인용)."""
+    assert settings.catalog.path is not None
+    catalog = load_catalog(settings.catalog.path)
+    async with PrometheusClient.from_config(settings.datasources.prometheus) as prom:
+        tool = CatalogQueryTool(
+            catalog, prom, agent=AgentName.NETWORK, budget=ToolBudget(10), timeout_seconds=20
+        )
+        now = utc_now()
+        ctx = AnalysisContext(
+            request_id="live",
+            question="workload flows",
+            intent=Intent.STATUS,
+            time_range=TimeRange.last(timedelta(minutes=30), now),
+            budget=Budget(max_llm_calls=0, max_tool_calls=10, deadline=now + timedelta(minutes=1)),
+        )
+        for key, label in (
+            ("network.workload_egress_by_verdict", "source_workload"),
+            ("network.workload_ingress_by_verdict", "destination_workload"),
+        ):
+            outcome = await tool.query(key, ctx, QueryMode.CURRENT)
+            result = outcome.result
+            assert result.status.value in ("ok", "empty"), result.error
+            rows = value_rows(result)
+            labeled = {labels[label] for labels, _ in rows if labels.get(label)}
+            verdicts = sorted({labels.get("verdict", "") for labels, _ in rows})
+            print(
+                f"\n{key}: 결과 {len(rows)}개, {label} 값 {len(labeled)}개 "
+                f"(예: {sorted(labeled)[:8]}), 판정 값 {verdicts}"
+            )

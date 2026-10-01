@@ -547,7 +547,10 @@ class ServiceAgent:
             )
             if name not in state.focus:
                 state.focus[name] = _Focus(name, value, "직전 구간 대비 오류율 증가")
-        if not increased:
+        if not increased and not compared:
+            # 비교할 서비스가 없으면 "증가한 대상 없음"이라고 하지 않습니다.
+            col.limit(f"{key}: 직전 구간과 비교할 서비스 결과가 없어 오류율 증가를 판단하지 않음")
+        elif not increased:
             col.findings.append(
                 Finding(
                     kind=FindingKind.FACT,

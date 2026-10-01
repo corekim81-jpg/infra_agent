@@ -167,6 +167,11 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 > - **Network Agent**: Hubble 패킷 드롭(사유·출발·도착)·흐름 드롭·오류 판정 비율, 노드 인터페이스·Pod 네트워크 오류, 컨테이너 패킷 드롭, TCP RST·DNS 질의량(현재 값), Hubble 이벤트 유실 (DNS 응답 코드·네트워크 지연은 수집되지 않아 확인하지 않음)
 >
 > "서비스가 느려진 이유가 네트워크인지 DB인지"처럼 서비스와 다른 분야를 함께 물으면 Service Agent 다음에 Network·DB Agent를 병렬로 실행합니다.
+> 이때 두 가지를 추가로 확인합니다.
+> - Network Agent는 Service Agent가 이상으로 판정한 서비스와 이름이 같은 워크로드의 흐름·드롭을 따로 확인합니다.
+> - 답변의 **분야 간 교차 확인**은 다른 분야의 이상을 그 서비스와 연결합니다. 연결 기준은 같은 대상(서비스·워크로드·컨테이너 이름)이거나, 그 서비스가 호출하는 DB의 이상인 경우입니다.
+>
+> 교차 확인은 연결된 이상, 연결되지 않은 이상, 확인하지 못한 분야를 구분해 표시합니다. 연결된 이상은 같은 구간에 함께 나타났다는 원인 후보(추정)로만 표시하며, 인과를 단정하지 않습니다.
 > 답변 끝에 실행한 에이전트와 결과(성공·실패·실행 안 함, 소요 시간)를 표시합니다.
 > 수치 판정은 항상 코드가 합니다. 모델(Claude Agent SDK, 선택)을 설정하면 질문 해석과 원인 후보(추정) 제안에 사용하며, 모델은 도구를 쓸 수 없습니다. 모델이 없거나 실패하면 규칙 기반으로 답합니다.
 
@@ -200,6 +205,7 @@ infra-agent ask --config config/local.yaml "Kubernetes에서 재시작하거나 
 infra-agent ask --config config/local.yaml "오류가 증가한 시간대의 로그와 트레이스를 연결해서 원인 후보를 알려줘"
 infra-agent ask --config config/local.yaml "DB 커넥션 풀이 부족하거나 쿼리가 느려진 징후가 있어?"
 infra-agent ask --config config/local.yaml "네트워크 패킷 드롭이나 DNS 문제가 있어?"
+infra-agent ask --config config/local.yaml "서비스 응답이 느려진 이유가 네트워크인지 DB인지 분석해 줘"
 #   옵션: --range 1h  --namespace otel-demo  --node <노드>  --pod <Pod>  --json  --no-llm
 #         --show-queries (조회식과, 검증에 실패해 제외된 모델 원인 후보를 진단용으로 표시)
 
@@ -211,7 +217,7 @@ python -m pytest -m "not live"
 
 이후 단계에서 다음 항목을 추가합니다.
 
-- 분야 간 교차 분석과 대표 질문 품질 평가
+- 대표 질문 품질 평가 (README 대표 질문 7개)
 - Kubernetes API 읽기 계정 연동 (Pending 사유, 종료 사유, 이벤트)
 - 컨테이너 실행 및 Kubernetes 배포 방법
 

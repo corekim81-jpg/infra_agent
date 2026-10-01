@@ -38,7 +38,7 @@ DEPENDENCIES: Mapping[AgentName, tuple[AgentName, ...]] = {
 
 OPTIONAL_UPSTREAM: frozenset[AgentName] = frozenset({AgentName.NETWORK, AgentName.DB})
 """선행 결과가 없어도 분석할 수 있는 에이전트. 선행 작업이 실패해도 건너뛰지 않고 실행합니다
-(현재 선행 결과는 중복 조회를 피하는 데만 쓰며, 교차 분석은 12단계)."""
+(선행 Service 결과는 중복 조회 회피와 이상 서비스 집중 확인에 쓰며, 없으면 그 확인만 생략)."""
 
 _AGENT_ORDER: tuple[AgentName, ...] = (
     AgentName.SERVER,
