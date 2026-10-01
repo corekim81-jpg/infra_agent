@@ -62,6 +62,7 @@ SCOPE_NOTES = frozenset(
     {
         server.SCOPE_NOTE,
         kubernetes.SCOPE_NOTE,
+        kubernetes.API_SCOPE_NOTE,
         service.SCOPE_NOTE,
         db.SCOPE_NOTE,
         network.SCOPE_NOTE,

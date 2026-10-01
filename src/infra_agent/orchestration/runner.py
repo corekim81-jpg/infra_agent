@@ -34,6 +34,8 @@ from infra_agent.agents.service import ServiceAgent
 from infra_agent.answer.synthesis import synthesize
 from infra_agent.catalog import Catalog
 from infra_agent.config.settings import Settings
+from infra_agent.datasources.errors import DataSourceError
+from infra_agent.datasources.kubernetes import KubernetesClient
 from infra_agent.datasources.loki import LokiClient
 from infra_agent.datasources.prometheus import PrometheusClient
 from infra_agent.datasources.tempo import TempoClient
@@ -54,6 +56,7 @@ from infra_agent.schemas import (
 )
 from infra_agent.timeutil import parse_duration, utc_now
 from infra_agent.tools import CatalogQueryTool, LogQueryTool, ToolBudget, TraceSearchTool
+from infra_agent.tools.k8s_query import KubernetesQueryTool
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,12 @@ class AgentDeps:
     llm: BudgetedLLM | None
     loki: LokiClient | None = None
     tempo: TempoClient | None = None
+    kubernetes: KubernetesClient | None = None
+    kubernetes_note: str | None = None
+    """Kubernetes API를 켰지만 연결하지 못한 이유 (kubeconfig 오류 등)."""
+    clock: Callable[[], datetime] = utc_now
+    """실제 시계. Kubernetes API의 현재 상태가 분석 구간에 해당하는지 판단합니다(요청의 `now`가
+    과거여도 API는 지금 상태를 돌려주므로 요청 기준 시계를 쓰지 않음)."""
 
 
 def _explainer(deps: AgentDeps, agent: AgentName, prompt: str) -> AgentExplainer | None:
@@ -113,10 +122,23 @@ def _build_server(deps: AgentDeps) -> Agent:
 
 
 def _build_kubernetes(deps: AgentDeps) -> Agent:
+    api = (
+        KubernetesQueryTool(
+            deps.kubernetes,
+            agent=AgentName.KUBERNETES,
+            budget=deps.tool_budget,
+            timeout_seconds=deps.settings.execution.tool_timeout_seconds,
+        )
+        if deps.kubernetes is not None
+        else None
+    )
     return KubernetesAgent(
         _tool(deps, AgentName.KUBERNETES),
         deps.settings.analysis,
         _explainer(deps, AgentName.KUBERNETES, KUBERNETES_SYSTEM_PROMPT),
+        api=api,
+        api_note=deps.kubernetes_note,
+        clock=deps.clock,
     )
 
 
@@ -228,7 +250,9 @@ async def answer_question(
     transport: httpx.AsyncBaseTransport | None = None,
     llm: LLMClient | None = None,
     use_llm: bool = True,
+    kube_transport: httpx.AsyncBaseTransport | None = None,
 ) -> AnswerBundle:
+    """`kube_transport`는 Kubernetes API 연결에 쓸 전송 계층(테스트용, 없으면 `transport`)."""
     current = now or utc_now()
     started = time.monotonic()
 
@@ -291,6 +315,27 @@ async def answer_question(
                 if wants_service and sources.tempo.enabled
                 else None
             )
+            kube, kube_note = None, None
+            if (
+                any(t.agent is AgentName.KUBERNETES for t in plan.tasks)
+                and sources.kubernetes.enabled
+            ):
+                try:
+                    kube = await stack.enter_async_context(
+                        KubernetesClient.from_config(
+                            sources.kubernetes,
+                            max_retries=retries,
+                            transport=kube_transport or transport,
+                        )
+                    )
+                except DataSourceError as exc:
+                    kube_note = f"Kubernetes API를 사용하지 못함: {exc.message}"
+                else:
+                    if kube.insecure:
+                        kube_note = (
+                            "Kubernetes API 서버 인증서를 검증하지 않고 접속함 "
+                            "(datasources.kubernetes.allow_insecure_tls)"
+                        )
             deps = AgentDeps(
                 settings=settings,
                 catalog=catalog,
@@ -299,6 +344,8 @@ async def answer_question(
                 llm=budgeted,
                 loki=loki,
                 tempo=tempo,
+                kubernetes=kube,
+                kubernetes_note=kube_note,
             )
             agents = {t.agent: AGENT_BUILDERS[t.agent](deps) for t in plan.tasks}
             executor = Executor(

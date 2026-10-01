@@ -19,9 +19,12 @@ datasources:
     url: http://127.0.0.1:13200
     timeout_seconds: 20
   kubernetes:
-    enabled: false           # 전용 읽기 계정 kubeconfig 준비 후 true. 관리자 kubeconfig 사용 금지
+    enabled: false           # 전용 읽기 계정 토큰 kubeconfig 준비 후 true (docs/environment.md 3.5절). 관리자 kubeconfig는 거부됨
     kubeconfig_env: INFRA_AGENT_KUBECONFIG
-    context: null
+    context: null            # null이면 current-context
+    timeout_seconds: 15
+    max_items: 2000          # 목록 조회 1회 최대 객체 수 (넘으면 일부만 보았다고 표시)
+    allow_insecure_tls: false  # kubeconfig의 insecure-skip-tls-verify 허용 여부 (개발 환경 전용)
   hubble:
     enabled: false           # 초기에는 Prometheus의 hubble_* 지표 사용
 

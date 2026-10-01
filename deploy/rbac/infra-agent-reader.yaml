@@ -1,0 +1,50 @@
+# infra_agent 전용 읽기 계정 (Kubernetes API 조회용).
+# - 조회(get/list/watch)만 허용하며 secrets, configmaps, 쓰기 동사는 넣지 않습니다.
+# - infra_agent는 시작 시 SelfSubjectRulesReview로 권한을 점검하고, 쓰기 권한이나 secrets 읽기 권한이
+#   보이면 Kubernetes API를 조회하지 않습니다 (docs/environment.md 3.5절).
+# 적용: kubectl apply -f deploy/rbac/infra-agent-reader.yaml   (클러스터 관리자가 한 번 실행)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: infra-agent-reader
+  namespace: infra-agent
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: infra-agent-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: infra-agent-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: infra-agent-reader
+subjects:
+  - kind: ServiceAccount
+    name: infra-agent-reader
+    namespace: infra-agent

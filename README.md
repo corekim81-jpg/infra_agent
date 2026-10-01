@@ -160,7 +160,7 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 
 > 현재는 초기 구현 단계입니다. 질문 응답은 다음 에이전트를 지원하며, 여러 분야를 함께 물으면 병렬로 실행합니다.
 > - **Server Agent**: k3d 노드·Pod·컨테이너 자원
-> - **Kubernetes Agent**: 노드 조건, Pod phase, 재시작·OOM, 워크로드 복제 상태 (Prometheus 지표 기준. Pending 사유·종료 사유·이벤트는 아직 확인하지 않음)
+> - **Kubernetes Agent**: 노드 조건, Pod phase, 재시작·OOM, 워크로드 복제 상태 (Prometheus 지표 기준). Kubernetes API 전용 읽기 계정을 설정하면 Pending 사유, 컨테이너 대기 사유(CrashLoopBackOff 등), 구간 내 비정상 종료 사유(OOMKilled 등), Warning 이벤트를 더합니다. 쓰기·Pod 실행·프록시·secrets 읽기 권한이 있는 계정은 쓰지 않습니다
 > - **Service Agent**: 서비스 요청량·오류율·p95 지연, 서비스 간 호출 실패·지연, DB 호출 span 지연, 오류 서비스의 오류율 최고 시점과 그 시간대 오류 로그(Loki)·오류 트레이스(Tempo)·같은 trace_id 연결, 지연 서비스의 지연 최고 시점과 그 시간대 느린 트레이스(Tempo). 기능 플래그 이벤트 스트림처럼 오래 열린 호출은 설정 `analysis.streaming_services`로 호출 지연 판정에서 뺄 수 있음
 > - **DB Agent**: PostgreSQL 연결 사용률·데드락·롤백 비율·버퍼 캐시 적중률, 앱 커넥션 풀 사용률(사용 중 연결)·대기, DB 작업·DB 호출 span 지연(비교 질문이면 직전 구간 대비 증가), Valkey 키 퇴출·연결 거부·적중률 (수집된 지표 기준. 쿼리별 통계·실행 계획·잠금 대기는 수집되지 않아 확인하지 않음)
 >
@@ -189,7 +189,8 @@ cp config/example.yaml config/local.yaml        # Windows: copy config\example.y
 # 적용될 설정 검증·출력
 infra-agent config --config config/local.yaml
 
-# 데이터 소스(Prometheus·Loki·Tempo) 연결 점검 — 개발 환경은 SSH 터널 필요
+# 데이터 소스(Prometheus·Loki·Tempo·Kubernetes API) 연결 점검 — 개발 환경은 SSH 터널 필요
+# Kubernetes API는 버전과 계정 권한(쓰기·secrets 권한 없음)을 확인
 infra-agent check --config config/local.yaml
 
 # 지표·라벨·최신성 탐색 → var/discovery/ 에 보고서 저장 (실제 데이터 포함, 커밋 금지)
@@ -219,9 +220,10 @@ python -m pytest -m "not live"
 
 설정 구조와 환경 변수는 [docs/environment.md](docs/environment.md), 개발 명령은 [docs/development.md](docs/development.md)를 참고합니다.
 
+Kubernetes API 연동(선택)은 전용 읽기 계정이 필요합니다. 클러스터 관리자가 [deploy/rbac/infra-agent-reader.yaml](deploy/rbac/infra-agent-reader.yaml)을 적용하고 `deploy/rbac/make-reader-config.sh`로 토큰 kubeconfig를 만든 뒤, 그 경로를 `INFRA_AGENT_KUBECONFIG`에 넣고 설정에서 `datasources.kubernetes.enabled: true`로 켭니다. 관리자 kubeconfig(클라이언트 인증서·exec 플러그인)는 거부합니다. 절차는 [docs/environment.md](docs/environment.md) 3.5절을 봅니다.
+
 이후 단계에서 다음 항목을 추가합니다.
 
-- Kubernetes API 읽기 계정 연동 (Pending 사유, 종료 사유, 이벤트)
 - 컨테이너 실행 및 Kubernetes 배포 방법
 
 ## 테스트 및 품질 평가

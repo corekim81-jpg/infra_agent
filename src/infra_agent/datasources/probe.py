@@ -1,6 +1,8 @@
 """데이터 소스 연결 점검 (architecture.md 4.3절 '연결 가능 여부').
 
-활성화된 HTTP 데이터 소스(Prometheus, Loki, Tempo)의 준비 상태와 버전을 확인합니다.
+- 활성화된 HTTP 데이터 소스(Prometheus, Loki, Tempo)의 준비 상태와 버전을 확인합니다.
+- Kubernetes API는 버전과 계정 권한(SelfSubjectRulesReview)을 확인합니다. 쓰기 권한이나 secrets
+  읽기 권한이 있으면 "사용 불가"로 표시합니다(전용 읽기 계정만 사용).
 """
 
 from __future__ import annotations
@@ -14,8 +16,13 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict
 
-from infra_agent.config.settings import HttpDatasourceConfig, Settings
+from infra_agent.config.settings import HttpDatasourceConfig, KubernetesConfig, Settings
 from infra_agent.datasources.errors import ConnectFailedError, DataSourceError
+from infra_agent.datasources.kubernetes import (
+    KubernetesClient,
+    assess_rules,
+    rules_scope_note,
+)
 from infra_agent.datasources.loki import LokiClient
 from infra_agent.datasources.prometheus import PrometheusClient
 from infra_agent.datasources.tempo import TempoClient
@@ -42,6 +49,7 @@ class SourceStatus(BaseModel):
     error_code: str | None = None
     error: str | None = None
     hint: str | None = None
+    notes: tuple[str, ...] = ()
 
 
 def _hint(url: str | None, exc: DataSourceError) -> str | None:
@@ -97,6 +105,83 @@ async def _probe_one(
             await client.aclose()
 
 
+REVIEW_NAMESPACE = "default"
+INSECURE_NOTE = (
+    "kubeconfig에 insecure-skip-tls-verify가 설정되어 서버 인증서를 검증하지 않습니다. "
+    "certificate-authority-data 사용을 권장합니다"
+)
+
+
+async def _probe_kubernetes(
+    config: KubernetesConfig,
+    environ: Mapping[str, str] | None,
+    transport: Callable[[], httpx.AsyncBaseTransport | None],
+) -> SourceStatus:
+    """Kubernetes API 버전과 계정 권한을 확인합니다."""
+    name = "kubernetes"
+    if not config.enabled:
+        return SourceStatus(name=name, enabled=False)
+    started = time.perf_counter()
+    try:
+        client = KubernetesClient.from_config(
+            config, environ=environ, max_retries=0, transport=transport()
+        )
+    except DataSourceError as exc:
+        return SourceStatus(
+            name=name,
+            enabled=True,
+            error_code=exc.code,
+            error=exc.message,
+            hint="전용 읽기 계정 kubeconfig 준비 방법은 docs/environment.md 3.5절을 보세요.",
+        )
+    try:
+        info = await client.version()
+        version = str(info["gitVersion"]) if info.get("gitVersion") else None
+        report = assess_rules(await client.self_rules(REVIEW_NAMESPACE))
+        notes = [*report.notes, rules_scope_note(REVIEW_NAMESPACE)]
+        if client.insecure:
+            notes.append(INSECURE_NOTE)
+        latency = int((time.perf_counter() - started) * 1000)
+        if not report.ok:
+            return SourceStatus(
+                name=name,
+                enabled=True,
+                url=client.server,
+                reachable=True,
+                ready=False,
+                version=version,
+                latency_ms=latency,
+                error_code="not_read_only",
+                error="; ".join(report.problems),
+                hint=(
+                    "전용 읽기 계정이 아닙니다. 이 상태에서는 Kubernetes API를 조회하지 않습니다. "
+                    "deploy/rbac/infra-agent-reader.yaml의 계정 토큰으로 kubeconfig를 만드세요."
+                ),
+                notes=tuple(notes),
+            )
+        return SourceStatus(
+            name=name,
+            enabled=True,
+            url=client.server,
+            reachable=True,
+            ready=True,
+            version=version,
+            latency_ms=latency,
+            notes=tuple(notes),
+        )
+    except DataSourceError as exc:
+        return SourceStatus(
+            name=name,
+            enabled=True,
+            url=client.server,
+            error_code=exc.code,
+            error=exc.message,
+            hint=_hint(client.server, exc),
+        )
+    finally:
+        await client.aclose()
+
+
 async def check_sources(
     settings: Settings,
     *,
@@ -128,5 +213,6 @@ async def check_sources(
         _probe_one("prometheus", ds.prometheus, prom),
         _probe_one("loki", ds.loki, loki),
         _probe_one("tempo", ds.tempo, tempo),
+        _probe_kubernetes(ds.kubernetes, environ, lambda: transport("kubernetes")),
     ]
     return list(await asyncio.gather(*probes))

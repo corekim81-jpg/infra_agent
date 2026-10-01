@@ -66,7 +66,7 @@ flowchart TD
 | Network | 패킷 드롭과 사유, 판정별 흐름, TCP 플래그, DNS 질의(응답 코드 없음), 인터페이스·Pod 네트워크 오류, Hubble 이벤트 유실 | Prometheus `hubble_*`, `k8s_node_network_*`, `k8s_pod_network_*`, `container_network_*` | `prom_*` (Hubble Relay 직접 조회는 미확인) |
 | DB | PostgreSQL 연결 수 대비 최대치, 데드락, 롤백·캐시 적중률, DB 크기, 앱 커넥션 풀 사용률·대기, DB 작업 지연 분위수, Valkey 연결·메모리·퇴출·적중률 | Prometheus `postgresql_*`, `db_client_*`, `db_sql_*`, `redis_*`(Valkey), spanmetrics의 DB span; Loki 앱 로그; Tempo DB span(`db.system` 등 확인됨) | `prom_*`, `loki_query_range`, `tempo_search` |
 | Service | 요청량, 오류율, 응답 시간(분위수), 서비스 간 호출·실패·지연, 로그 오류 패턴, 느린·실패 트레이스 | Prometheus `traces_spanmetrics_*`, `traces_service_graph_*`(Tempo metrics-generator), 서비스별 `http_*`·`rpc_*`; Loki; Tempo | `prom_*`, `loki_*`, `tempo_search`, `tempo_trace` |
-| Kubernetes | 노드 조건·압박, Pod phase·컨테이너 준비·재시작·OOM, 워크로드 복제 상태(Deployment·StatefulSet·DaemonSet·Job·HPA), 요청·제한, Pending 사유·이벤트 | Prometheus `k8s_*`(k8s_cluster 수집), `container_oom_events_total`; 이벤트(수집 위치 미확인); Kubernetes API는 읽기 계정 준비 후 | `prom_*`, `loki_*`, (이후) `k8s_list`, `k8s_get`, `k8s_events` |
+| Kubernetes | 노드 조건·압박, Pod phase·컨테이너 준비·재시작·OOM, 워크로드 복제 상태(Deployment·StatefulSet·DaemonSet·Job·HPA), 요청·제한, Pending 사유·컨테이너 대기·종료 사유·Warning 이벤트 | Prometheus `k8s_*`(k8s_cluster 수집), `container_oom_events_total`; Kubernetes API(전용 읽기 계정, 선택) | `prom_*`, Kubernetes API 조회 도구(권한 점검, Pod 상태 요약, Warning 이벤트) |
 
 **Server Agent 구현 (#11, 모델 해석 #15):** `agents/server.py` — 판정은 코드, 원인 후보·추가 확인 제안은 모델(10.1절, `data_policy`가 none이 아니고 경고·심각이 있을 때)
 - 상태 조회: 노드 CPU·메모리·파일시스템 사용률, 컨테이너 CPU·메모리 limit 대비 사용률, CPU 스로틀링을 임계값(`analysis.utilization_warning/critical`, `throttling_warning`)으로 판정하고 노드 CPU·메모리 현재 값을 함께 제시
@@ -74,11 +74,19 @@ flowchart TD
 - 빈 결과는 한계로, 최신성을 확인하지 못했거나 오래된 데이터로는 "기준 미만"이라고 판정하지 않음. 요청 대상으로 필터링할 수 없는 항목은 조회하지 않고 한계로 표시
 - 카탈로그 조회 도구(`tools/catalog_query.py`)가 agent=server 항목만 실행하도록 강제
 
-**Kubernetes Agent 구현 (#21):** `agents/kubernetes.py`, 지침 `agents/prompts.py`(`KUBERNETES_SYSTEM_PROMPT`) — Kubernetes API 연동 전이므로 Prometheus의 k8s_cluster·cAdvisor 지표로 판정
+**Kubernetes Agent 구현 (#21, API 연동 #35):** `agents/kubernetes.py`, 지침 `agents/prompts.py`(`KUBERNETES_SYSTEM_PROMPT`) — Prometheus의 k8s_cluster·cAdvisor 지표로 판정하고, Kubernetes API를 설정하면 상세 사유를 더함
 - 현재 상태: 노드 NotReady(심각)·압박, Pod phase가 Running·Succeeded가 아닌 Pod(Failed 심각, Pending·Unknown 경고), not ready 컨테이너(완료된 Pod 제외), Deployment·StatefulSet·DaemonSet 복제 부족, 실패 Pod가 있는 Job, 최대 복제에 도달한 HPA
 - 분석 구간: 컨테이너 재시작 증가(경고), OOM 이벤트(심각). 분석 구간 전체의 증가량(`window` 조회)으로 판정하며, 상태 질문은 기본 구간(`execution.default_time_range`)을 씀
 - **조건 조회의 빈 결과:** 문제 대상만 결과로 나오는 조회이므로, 조회 성공 + 기준 지표가 최신 + (대상 필터가 있으면) 그 대상의 기준 지표 시계열 존재(`CatalogQueryTool.coverage`)를 모두 확인한 경우에만 "해당 대상 없음"으로 판정합니다. 하나라도 확인하지 못하면 한계로 표시합니다.
-- 재시작과 OOM 이벤트가 같은 컨테이너에서 함께 확인되어도 종료 사유를 조회하지 않았으므로 인과를 단정하지 않고 추가 확인으로 제안합니다. Pending 사유·종료 사유·이벤트는 Kubernetes API 연동(8b) 후 확인합니다.
+- 재시작과 OOM 이벤트가 같은 컨테이너에서 함께 확인되어도 종료 사유를 조회하지 않았으면 인과를 단정하지 않고 추가 확인으로 제안합니다.
+- **Kubernetes API 상세 (#35, 선택):** 도구 `tools/k8s_query.py`(Kubernetes Agent 전용), 클라이언트 `datasources/kubernetes.py`
+  - 먼저 `SelfSubjectRulesReview`(기본 네임스페이스와 대상 네임스페이스)로 계정 권한을 점검합니다. 쓰기 동사(create·update·patch·delete 등, 자기 권한 조회 제외), 동사와 관계없이 Pod 실행·프록시 하위 리소스(`pods/exec`·`attach`·`portforward`·`proxy`, `nodes/proxy`, `services/proxy`, 와일드카드 포함), secrets 읽기 권한이 보이거나 권한 목록을 확인하지 못하면(incomplete이고 규칙 없음) API를 조회하지 않고 한계로 표시합니다.
+  - Pod 목록에서 Pending 사유(PodScheduled 조건, 없으면 컨테이너 대기 사유), 컨테이너 대기 사유(ContainerCreating·PodInitializing 제외), 분석 구간 안의 비정상 종료(정상 완료 Completed·종료 코드 0 제외)를 사실로 만듭니다. 지표 판정이 이미 경고한 대상은 사유를 덧붙이는 정보(INFO), 지표 판정에 없던 대상은 경고(OOMKilled는 심각)로 표시해 같은 문제를 두 번 세지 않습니다.
+  - Pod 상태는 조회 시점의 현재 상태이므로 분석 구간 끝이 현재(`stale_after_seconds` 이내)가 아니면 쓰지 않습니다.
+  - Warning 이벤트(`fieldSelector=type=Warning`)는 마지막 관측 시각이 분석 구간 안인 것만 대상·사유별로 묶어 정보로 표시합니다. 횟수는 누적 값입니다. 구간 시작이 이벤트 보관 기간(기본 1시간)보다 오래되었으면 한계로 표시하고 "이벤트 없음"이라고 말하지 않습니다.
+  - 상태·이벤트 메시지는 외부 데이터로 정리(제어문자 제거·마스킹·200자 제한)하며, 근거에는 판정에 필요한 필드만 남깁니다(Pod 명세의 환경 변수·명령은 남기지 않음).
+  - 요청 대상(네임스페이스·노드·Pod·컨테이너·워크로드)으로 거릅니다. 워크로드는 Pod의 컨트롤러(ownerReferences: ReplicaSet `<이름>-<해시>`, StatefulSet·DaemonSet·Job)로 확인합니다(이름 접두어만 보면 `frontend`가 `frontend-proxy`를 포함하게 됨). 대상에 해당하는 Pod가 없거나, 목록이 `max_items`에서 잘렸으면 "해당 없음" 대신 한계로 표시합니다.
+  - 같은 문제를 두 번 세지 않습니다: Pending 사유가 컨테이너 대기이면 대기 사실을 따로 만들지 않고, 대기 중인 컨테이너의 구간 내 종료는 한 사실로 묶어 더 높은 심각도로 표시합니다.
 - Pod phase 값(1=Pending … 5=Unknown)은 OTel k8s_cluster 수신기 정의를 따른 가정이며 답변 한계에 표시합니다.
 - Server Agent가 제안한 "limit 근접 컨테이너의 OOM·재시작 확인"은 같은 요청에서 Kubernetes Agent가 성공하면 종합 단계에서 뺍니다.
 - 질문 해석: "Pod·컨테이너·노드"만으로는 서버 자원 분야로 보지 않고, Kubernetes 키워드가 있으면 Kubernetes만 실행합니다(자원 키워드가 함께 있으면 Server ∥ Kubernetes).
@@ -335,7 +343,7 @@ DataSource (인터페이스)
 ## 9. 보안
 
 - **읽기 전용:** 도구 계층에 쓰기 작업을 제공하지 않습니다. Kubernetes는 `get/list/watch`만 허용하는 전용 ServiceAccount/RBAC를 사용하고 `secrets` 리소스 조회 권한은 부여하지 않습니다.
-- **Kubernetes 계정:** 관리자 kubeconfig를 프로그램에 사용하지 않습니다. 전용 읽기 계정의 kubeconfig 경로만 설정으로 받습니다.
+- **Kubernetes 계정:** 관리자 kubeconfig를 프로그램에 사용하지 않습니다. 전용 읽기 계정의 kubeconfig 경로만 설정으로 받고, ServiceAccount 토큰 형식만 허용합니다(클라이언트 인증서·exec 플러그인·auth-provider·사용자 이름/비밀번호·가장 설정은 거부). 서버 인증서를 검증하지 않는 `insecure-skip-tls-verify`는 토큰이 노출될 수 있어 설정에서 명시적으로 허용(`allow_insecure_tls`)한 경우에만 쓰고, 답변 한계에 표시합니다. 클라이언트는 허용 목록 리소스의 목록 조회(GET)만 보내며, 유일한 POST는 저장되지 않는 권한 점검(`SelfSubjectRulesReview`)입니다. 권한 점검에서 쓰기·Pod 실행·프록시·secrets 읽기 권한이 보이면 조회하지 않습니다. RBAC 매니페스트는 `deploy/rbac/infra-agent-reader.yaml`입니다.
 - **모델 SDK 제한:** Claude Agent SDK의 내장 파일·셸 도구와 로컬 설정 로딩을 비활성화하고, 에이전트별 읽기 전용 도구만 허용합니다(10.1절).
 - **모델 입력 범위:** 외부 모델로 보내는 데이터는 `llm.data_policy`로 제한합니다(10.2절).
 - **비밀값 보호:** 인증정보를 코드·Git·모델 입력·답변·로그에 남기지 않습니다. 로그 출력 전에 토큰·비밀번호 패턴을 마스킹합니다.
@@ -407,7 +415,7 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | --- | --- | --- |
 | Python | 3.11 이상 (개발: Windows 호스트, 목표: Rocky Linux 9) | 제안 |
 | HTTP 클라이언트 | `httpx` (비동기) | 제안 |
-| Kubernetes 클라이언트 | 공식 `kubernetes` Python 클라이언트, 전용 읽기 계정 kubeconfig | 제안 |
+| Kubernetes 클라이언트 | `httpx` 기반 얇은 읽기 전용 클라이언트(`datasources/kubernetes.py`), 전용 읽기 계정 토큰 kubeconfig. 공식 `kubernetes` 패키지는 쓰기 API 전체와 kubeconfig의 모든 인증 방식(exec·클라이언트 인증서)을 함께 가져와 "읽기 전용·전용 계정만" 규칙을 코드로 좁히기 어렵고, 필요한 조회가 목록 몇 개뿐이라 쓰지 않음 | 도입됨 (#35) |
 | MCP (데이터 접근 경로) | 공식 `mcp` Python SDK, 직접 API 구현 이후 추가 | 제안 |
 | 스키마·설정 | Pydantic v2, pydantic-settings + YAML | 제안 |
 | 인터페이스 | CLI 먼저, 이후 FastAPI 기반 HTTP API | 제안 |
@@ -420,8 +428,8 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | **운영 환경**의 외부 모델 전송 허용 범위 | 미정 (개발 환경은 `full`로 결정, 기본값 `none`). Tempo span에 SQL 원문이 있음 | 에이전트 해석 방식, 보안 | 운영 적용 전 |
 | 라벨 값 의미 (`k8s_pod_phase`, 노드 조건, spanmetrics `status_code`·`span_kind`, 커넥션 상태) | 가정 (카탈로그 caveats) | 판정 정확도 | 각 에이전트 구현 시 값 검토 |
 | `k8s_pod_cpu_usage`, spanmetrics 지연 단위 | 가정 (cores, seconds). 노드·컨테이너 CPU는 cores로 검증됨 | 수치 해석 | 해당 에이전트 구현 시 |
-| Kubernetes 이벤트 저장 위치 (Loki 여부) | 미확인 | Kubernetes Agent | 8단계 |
-| Kubernetes 전용 읽기 계정 | 준비 전 | Kubernetes API 연동 | 8b단계 |
+| Kubernetes 이벤트 저장 위치 (Loki 여부) | Kubernetes API로 조회(#35). 보관 기간(기본 1시간)보다 긴 이벤트 이력은 미확인 | Kubernetes Agent | 확장 단계 |
+| Kubernetes 전용 읽기 계정 | 매니페스트·도구 구현됨(#35), 개발 서버 적용·live 확인 전 | Kubernetes API 연동 | 사용자 계정 준비 후 |
 | 물리 서버 성능 수집 | 없음 (`system_*`는 Pod 단위) | Server Agent 확장 | 확장 단계 |
 | `pg_stat_statements`, 실행 계획, 잠금 그래프 | 수집되지 않음 | DB Agent 확장 | 확장 단계 |
 | DNS 응답 코드 | Hubble 지표에 없음 | Network Agent DNS 오류 분석 | 확장 단계 |

@@ -73,8 +73,17 @@ class HttpDatasourceConfig(_Strict):
 class KubernetesConfig(_Strict):
     enabled: bool = False
     kubeconfig_env: str = "INFRA_AGENT_KUBECONFIG"
-    """전용 읽기 계정 kubeconfig 파일 **경로**를 담은 환경 변수 이름."""
+    """전용 읽기 계정 kubeconfig 파일 **경로**를 담은 환경 변수 이름.
+
+    ServiceAccount 토큰(`token`, `tokenFile`) 계정만 허용합니다. 클라이언트 인증서·exec 플러그인
+    등 관리자 kubeconfig 형식은 거부합니다."""
     context: str | None = None
+    """사용할 kubeconfig 컨텍스트. None이면 current-context."""
+    timeout_seconds: float = Field(default=15.0, gt=0, le=300)
+    max_items: int = Field(default=2000, ge=1, le=20000)
+    """목록 조회 1회에서 가져올 최대 객체 수 (넘으면 일부만 보았다고 표시)."""
+    allow_insecure_tls: bool = False
+    """kubeconfig의 insecure-skip-tls-verify를 허용할지 (기본 거부, 개발 환경 전용)."""
 
     @field_validator("kubeconfig_env")
     @classmethod

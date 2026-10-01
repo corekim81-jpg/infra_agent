@@ -1,7 +1,7 @@
 # 개발 가이드
 
-> **상태: 12b단계 (#31) 평가 기록 완료.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29)이 있습니다.
-> Kubernetes API 연동(8b)은 아직 없습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> **상태: 8b단계 (#35) 구현, 개발 서버 live 확인 전.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29), Kubernetes API 읽기 전용 연동(#35: 전용 읽기 계정 kubeconfig, 권한 점검, Pod 상태·Warning 이벤트, RBAC 매니페스트)이 있습니다.
+> Kubernetes API 연동은 사용자가 읽기 계정을 준비한 뒤 개발 서버 live 확인이 남아 있습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -139,7 +139,7 @@ infra_agent/
 | 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 완료 (#15, PR #16; 개발 서버 모델 live 3건 통과 2026-09-29. 관측 표시값 보완 #17) |
 | 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 완료 (#19, PR #20; 개발 서버 live 12건 통과 2026-09-29) |
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 완료 (#21, PR #22; 개발 서버 live 14건 통과 2026-09-29. 이벤트는 수집 위치 미확인으로 제외, 8b에서 확인) |
-| 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트, 권한 점검, `k8s_*` 도구 | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 계획 |
+| 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트(`deploy/rbac/`), 토큰 kubeconfig만 허용하는 클라이언트, 권한 점검(`check`·질문 처리), Kubernetes Agent 전용 조회 도구(Pod 상태·Warning 이벤트) | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 구현 (#35; 단위 테스트 통과, 개발 서버 live는 계정 준비 후) |
 | 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 완료 (#23, PR #24; 개발 서버 live 4건 통과 2026-09-30, 병합 후 느린 트레이스 검색식 포함 재확인) |
 | 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 완료 (#25, PR #26; 개발 서버 live 3건 통과 2026-09-30) |
 | 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 완료 (#27, PR #28; 개발 서버 live 2건 통과 2026-09-30) |
@@ -164,4 +164,15 @@ infra_agent/
 
 ## 8. 문제 해결
 
-구현 전이므로 아직 항목이 없습니다. 데이터 소스 연결 오류, 인증 오류, 데이터 지연 등 실제로 발생한 문제와 해결 방법을 구현 단계에서 추가합니다.
+실제로 발생했거나 코드가 구분해 알려 주는 문제만 적습니다.
+
+| 증상 (`check` 출력) | 원인 | 해결 |
+| --- | --- | --- |
+| `kubernetes: 연결 실패 [missing_credential]` | `INFRA_AGENT_KUBECONFIG`(또는 `kubeconfig_env`)가 설정되지 않음 | 전용 읽기 계정 kubeconfig 경로를 지정 (environment.md 3.5절) |
+| `kubernetes: 연결 실패 [kubeconfig_error] … 허용하지 않는 인증 설정(client-certificate-data …)` | 관리자·개인 kubeconfig를 지정함 | `deploy/rbac/make-reader-config.sh`로 만든 토큰 kubeconfig 사용 |
+| `kubernetes: 연결 실패 [http_401] 인증 실패` | 토큰 만료 또는 다른 클러스터의 토큰 | kubeconfig를 다시 만듦 |
+| `kubernetes: 연결 실패 [http_403] 권한 없음` | ClusterRole·바인딩이 적용되지 않음 | `kubectl apply -f deploy/rbac/infra-agent-reader.yaml` |
+| `kubernetes: 응답했지만 사용 불가 [not_read_only]` | 계정에 쓰기·Pod 실행·프록시·secrets 읽기 권한이 있거나 권한 목록을 확인하지 못함 | 전용 읽기 계정 사용. 이 상태에서는 질문 처리 때도 API를 조회하지 않음 |
+| `kubernetes: 연결 실패 [kubeconfig_error] … insecure-skip-tls-verify` | kubeconfig가 서버 인증서 검증을 끔 | `certificate-authority-data` 사용 (`make-reader-config.sh`가 넣어 줌). 개발 환경에서만 `allow_insecure_tls: true` |
+| `kubernetes: 연결 실패 [connect_error]` (TLS 오류 포함) | 터널 미실행, 주소 오류, 또는 서버 인증서에 접속 주소가 없음 | 터널·포트 확인, 인증서에 포함된 주소(`127.0.0.1`·`localhost` 등)로 접속 |
+| Prometheus·Loki·Tempo `연결 실패 [connect_error]` + SSH 터널 힌트 | 터널 미실행, WSL·Docker에서 실행 | environment.md 1.1절 |

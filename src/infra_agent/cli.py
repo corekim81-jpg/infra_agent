@@ -165,12 +165,18 @@ def _status_line(st: SourceStatus) -> str:
         return f"- {st.name}: 비활성 (설정에서 enabled=false)"
     if st.reachable:
         state = "정상" if st.ready else "응답했지만 준비되지 않음"
-        return (
+        if not st.ready and st.error:
+            state = f"응답했지만 사용 불가 [{st.error_code}] {st.error}"
+        line = (
             f"- {st.name}: {state} ({st.url}, 버전 {st.version or '확인 불가'}, {st.latency_ms}ms)"
         )
-    line = f"- {st.name}: 연결 실패 ({st.url}) [{st.error_code}] {st.error}"
+    else:
+        where = f" ({st.url})" if st.url else ""
+        line = f"- {st.name}: 연결 실패{where} [{st.error_code}] {st.error}"
     if st.hint:
         line += f"\n    힌트: {st.hint}"
+    for note in st.notes:
+        line += f"\n    참고: {note}"
     return line
 
 
