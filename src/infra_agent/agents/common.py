@@ -34,6 +34,7 @@ class Collector:
     findings: list[Finding] = field(default_factory=list)
     evidence: dict[str, ToolResult] = field(default_factory=dict)
     limitations: list[str] = field(default_factory=list)
+    scope_notes: list[str] = field(default_factory=list)
     next_checks: list[str] = field(default_factory=list)
     errors: list[ErrorInfo] = field(default_factory=list)
     queries: int = 0
@@ -45,6 +46,11 @@ class Collector:
     def limit(self, text: str) -> None:
         if text not in self.limitations:
             self.limitations.append(text)
+
+    def note(self, text: str) -> None:
+        """분석 범위·해석 기준 안내를 기록합니다 (이번 조회의 한계는 `limit`)."""
+        if text not in self.scope_notes:
+            self.scope_notes.append(text)
 
     def suggest(self, text: str) -> None:
         if text not in self.next_checks:
@@ -114,6 +120,7 @@ def finish(task: AgentTask, agent: AgentName, col: Collector) -> AgentResult:
         findings=tuple(col.findings),
         evidence=tuple(col.evidence.values()),
         limitations=tuple(col.limitations),
+        scope_notes=tuple(col.scope_notes),
         next_checks=tuple(col.next_checks),
         errors=tuple(col.errors),
         usage=Usage(tool_calls=col.queries),

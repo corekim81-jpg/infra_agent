@@ -11,7 +11,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from infra_agent.agents import db, kubernetes, network, server, service
 from infra_agent.agents.common import NO_ANOMALY_NO_HYPOTHESIS
 from infra_agent.answer.render import render_text
 from infra_agent.config.settings import Settings
@@ -58,18 +57,7 @@ NO_ISSUE_PHRASES = (
 )
 """판단 근거가 있을 때만 쓸 수 있는 "이상 없음" 요약 문구 (synthesis._summary)."""
 
-SCOPE_NOTES = frozenset(
-    {
-        server.SCOPE_NOTE,
-        kubernetes.SCOPE_NOTE,
-        kubernetes.API_SCOPE_NOTE,
-        service.SCOPE_NOTE,
-        db.SCOPE_NOTE,
-        network.SCOPE_NOTE,
-    }
-)
-"""에이전트가 항상 붙이는 분석 범위 안내. 데이터 부족을 알렸는지 볼 때는 제외합니다."""
-NOT_REASONS = SCOPE_NOTES | {NO_ANOMALY_NO_HYPOTHESIS}
+NOT_REASONS = frozenset({NO_ANOMALY_NO_HYPOTHESIS})
 """데이터 부족 사유로 보지 않는 한계 문구 (범위 안내, "이상 징후가 없어 원인 후보 생략")."""
 
 USABLE = frozenset({"ok", "empty", "truncated"})

@@ -261,7 +261,7 @@ def test_links_direct_indirect_and_unlinked() -> None:
         "(같은 구간 동시 발생 기준, 인과 미확인). 네트워크 분야는 서비스 단위로 연결할 수 있는 "
         "결과가 없어 연결 여부를 판단하지 못했습니다."
     )
-    assert CROSS_NOTE in cross.limitations
+    assert CROSS_NOTE in cross.scope_notes and CROSS_NOTE not in cross.limitations
 
 
 def test_indirect_only_is_low_confidence_and_issue_severity_counts() -> None:
@@ -444,9 +444,9 @@ def test_synthesis_includes_cross_check() -> None:
     assert "분야 간 교차 확인: 서비스 이상 대상 2개 중" in answer.summary
     assert answer.cross_checks[0].startswith("서비스 이상 대상:")
     assert len(answer.correlations) == 1 and answer.hypotheses == ()
-    assert CROSS_NOTE in answer.limitations
+    assert CROSS_NOTE in answer.scope_notes
     single = synthesize("r2", interp, [DB])
-    assert single.cross_checks == () and CROSS_NOTE not in single.limitations
+    assert single.cross_checks == () and CROSS_NOTE not in single.scope_notes
 
 
 def test_live_like_service_without_db_calls() -> None:

@@ -87,7 +87,7 @@ flowchart TD
   - 상태·이벤트 메시지는 외부 데이터로 정리(제어문자 제거·마스킹·200자 제한)하며, 근거에는 판정에 필요한 필드만 남깁니다(Pod 명세의 환경 변수·명령은 남기지 않음).
   - 요청 대상(네임스페이스·노드·Pod·컨테이너·워크로드)으로 거릅니다. 워크로드는 Pod의 컨트롤러(ownerReferences: ReplicaSet `<이름>-<해시>`, StatefulSet·DaemonSet·Job)로 확인합니다(이름 접두어만 보면 `frontend`가 `frontend-proxy`를 포함하게 됨). 대상에 해당하는 Pod가 없거나, 목록이 `max_items`에서 잘렸으면 "해당 없음" 대신 한계로 표시합니다.
   - 같은 문제를 두 번 세지 않습니다: Pending 사유가 컨테이너 대기이면 대기 사실을 따로 만들지 않고, 대기 중인 컨테이너의 구간 내 종료는 한 사실로 묶어 더 높은 심각도로 표시합니다.
-- Pod phase 값(1=Pending … 5=Unknown)은 OTel k8s_cluster 수신기 정의를 따른 가정이며 답변 한계에 표시합니다.
+- Pod phase 값(1=Pending … 5=Unknown)은 OTel k8s_cluster 수신기 정의를 따른 가정이며 답변의 분석 범위·해석 기준에 표시합니다(1=Pending은 개발 서버에서 Kubernetes API 값과 일치 확인, #35).
 - Server Agent가 제안한 "limit 근접 컨테이너의 OOM·재시작 확인"은 같은 요청에서 Kubernetes Agent가 성공하면 종합 단계에서 뺍니다.
 - 질문 해석: "Pod·컨테이너·노드"만으로는 서버 자원 분야로 보지 않고, Kubernetes 키워드가 있으면 Kubernetes만 실행합니다(자원 키워드가 함께 있으면 Server ∥ Kubernetes).
 
@@ -117,7 +117,7 @@ flowchart TD
 - 현재 값(판정 없음): TCP RST 패킷(RST가 없으면 확인한 플래그 값을 표시), DNS 질의량. DNS 응답 코드·네트워크 지연(RTT)은 수집되지 않아 판단하지 않음
 - Hubble 이벤트 유실이 있으면 정보로 표시하고 Hubble 기반 결과가 불완전할 수 있음을 한계에 적음
 - Hubble 지표의 `k8s_*` 라벨은 수집 주체(cilium)이므로 대상은 `source_*`·`destination_*`로 표시. 빈 값은 "외부·미확인". Prometheus는 빈 값 라벨을 결과에서 빼므로, Hubble 항목은 출발·도착 라벨이 아예 없어도 흐름("외부·미확인 → 외부·미확인")으로 표시
-- 드롭 사유에는 정책 거부처럼 의도된 차단도 있어 드롭이 곧 장애라고 단정하지 않음(한계·지침에 명시)
+- 드롭 사유에는 정책 거부처럼 의도된 차단도 있어 드롭이 곧 장애라고 단정하지 않음(분석 범위·해석 기준과 지침에 명시)
 - `benign_drop_reasons`(기본 `UNSUPPORTED_L3_PROTOCOL`: IPv4·IPv6가 아닌 L3 패킷, 예: ARP)에 있는 사유는 발생 수를 그대로 보이되 경고가 아닌 정보로 표시하고, 그 사실을 한계에 적음. 표시 순서는 경고 대상 먼저
 - DNS 질의량 합계가 0이면 사실로 표시하지 않고, Hubble DNS 지표는 DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계하므로 실제 질의가 없다는 뜻이 아닐 수 있음을 한계에 적음
 - 네임스페이스·워크로드 필터는 Hubble 항목에서 도착 기준이므로, 필터가 있으면 한계에 적고 판정 문장에 "(도착 기준)"을 붙임. Hubble 이벤트 유실은 관측 품질 점검이라 대상 필터 없이 전체를 봄
@@ -135,7 +135,7 @@ flowchart TD
 - 구간 내 발생 수(분석 구간 전체 `increase()`, 0.5 이상이면 발생): 데드락, 커넥션 풀 대기, Valkey 키 퇴출·연결 거부. 0이면 최신 데이터일 때만 "발생 없음"
 - 현재 값(판정 없음): PostgreSQL DB별 연결 수·DB 크기, Valkey 클라이언트 수·메모리·키 적중률
 - 비교·이상 질문: DB 작업·DB 호출 span 지연 p95의 직전 구간 평균 대비 증가(`increase_ratio`와 `min_latency_increase_seconds` 모두)
-- 커넥션 풀 사용률은 상태 라벨 값이 idle인 연결을 뺀 **사용 중 연결** 기준(상태 값 이름은 가정, 한계에 표시). 풀 이름(연결 문자열일 수 있음)은 대상 이름에 쓰지 않음
+- 커넥션 풀 사용률은 상태 라벨 값이 idle인 연결을 뺀 **사용 중 연결** 기준(상태 값 이름은 가정, 분석 범위·해석 기준에 표시). 풀 이름(연결 문자열일 수 있음)은 대상 이름에 쓰지 않음
 - 결과가 없으면 정상으로 보지 않고 사유(지표 없음, 최근 5분 트랜잭션 없음, 최대 연결 0 등)와 함께 한계에 적음. 대상 필터가 있으면 대상 시계열 존재(`coverage`)로 오타 등을 구분
 - 선행 Service Agent 결과에 DB 호출 span 지연(현재)이 있으면 다시 조회하지 않고 한계에 적음(선행 결과는 중복 조회를 피하는 데만 사용)
 - 지연 p95가 히스토그램의 최대 유한 버킷 경계와 같으면 "N초 이상(히스토그램 최대 구간)"으로 표시(Service와 같은 방식)
@@ -153,7 +153,7 @@ flowchart TD
 - 연결 기준
   - 같은 대상: 다른 분야 이상 사실의 대상 라벨(서비스·워크로드·컨테이너 이름)이 이상 서비스 이름과 같음 → 원인 후보 신뢰도 medium
   - 간접 연결: 이상이 DB·캐시 전체 지표(`db.pg_*` → postgresql, `cache.valkey_*` → redis·valkey)이고 이상 서비스가 그 DB 종류를 호출함(Service Agent의 DB 호출 span `db_system_name`) → 신뢰도 low
-- 연결은 같은 분석 구간 안의 동시 발생일 뿐이므로 `basis=correlation`인 원인 후보(추정)로만 표시하고 인과를 단정하지 않음(한계에도 적음)
+- 연결은 같은 분석 구간 안의 동시 발생일 뿐이므로 `basis=correlation`인 원인 후보(추정)로만 표시하고 인과를 단정하지 않음(분석 범위·해석 기준에도 적음)
 - 분야별 줄: 연결된 이상 수, 연결되지 않은 이상(최대 2건 표시), 기준을 넘는 이상 없음, 판단할 결과 없음·실패로 확인하지 못함을 구분
 - 서비스별 줄: 분야마다 "연결된 이상", "이 서비스 관련 결과에서 기준을 넘는 이상 없음"(그 서비스를 대상으로 하거나 그 서비스가 호출하는 DB를 다룬 사실이 있을 때만), "DB 호출 span에 이 서비스의 DB 호출이 없음", "이 서비스와 연결할 수 있는 결과가 없어 판단하지 못함"(Pod·노드 단위 결과 등)으로 나눔. 연결된 분야가 없으면 "원인 분야를 가리지 못함"을 붙이고, 부분 성공 분야는 "(일부 조회 미완료)"로 표시
 - "이상 없음" 판단에 쓰는 사실은 기준 판정(`threshold`·`baseline`)만 인정(판정 기준 미적용 사실 제외). Network 집중 확인 사실도 비율이나 드롭을 실제로 판정했을 때만 서비스 대상을 붙임
@@ -278,6 +278,7 @@ AgentResult
   task_id, agent, status: success|partial|failed|skipped
   findings, evidence: [ToolResult]   # findings의 evidence_ids는 evidence에 존재해야 함
   limitations, next_checks, errors: [{code, message}], usage: {llm_calls, tool_calls, elapsed_ms}
+  scope_notes: [str]       # 분석 범위·해석 기준 안내 (조회 결과와 관계없이 같은 문구, #37)
   rejected_hypotheses: [{statement, evidence_ids, reasons}]   # 검증 실패로 제외한 모델 원인 후보(진단용, 답변 본문 제외)
   # 규칙: failed에는 findings 금지, failed/partial에는 errors 또는 limitations 필수
 
@@ -286,9 +287,12 @@ FinalAnswer
   facts: [Finding(fact)], hypotheses: [Finding(hypothesis)]
   evidence: [{source, query, time_range, key_values}]
   limitations, unverified_areas, next_checks
+  scope_notes: [str]                    # 분석 범위·해석 기준 (에이전트·교차 확인의 고정 안내, #37)
   cross_checks: [str]                   # 분야 간 교차 확인 줄 (#29)
   correlations: [Finding(hypothesis)]   # 분야 간 동시 발생 원인 후보, basis=correlation만 허용
 ```
+
+`limitations`에는 이번 조회에 따라 달라지는 내용(조회 실패, 최신성 미확인, 대상 필터 불가, 결과 없음 등)만 두고, 조회 결과와 관계없이 같은 안내(에이전트 분석 범위, 값 해석 기준, 집계 방식)는 `scope_notes`에 둡니다. 답변에서는 `[한계]`와 답변 끝의 `[분석 범위·해석 기준]`으로 나눠 표시하며, 둘 다 모델 입력의 관측 데이터에 전달합니다(#37).
 
 "현재 상태·이상 징후·영향 범위"는 별도 필드가 아니라 `summary`와 Finding(`severity`, `targets`)으로 표현합니다. 분야 간 연결은 `cross_checks`와 `correlations`로 표현하며, 모델 원인 후보(`hypotheses`)와 구분해 답변에 표시합니다.
 

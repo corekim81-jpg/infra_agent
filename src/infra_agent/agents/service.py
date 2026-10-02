@@ -213,7 +213,7 @@ class ServiceAgent:
         """선행 작업이 없는 첫 단계 분석이므로 `upstream`은 사용하지 않습니다."""
         targets = context_targets(ctx)
         col = Collector()
-        col.limit(SCOPE_NOTE)
+        col.note(SCOPE_NOTE)
         state = _State()
         await self._request_rates(ctx, targets, col, state)
         if state.rates_ok:

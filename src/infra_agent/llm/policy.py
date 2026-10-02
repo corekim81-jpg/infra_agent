@@ -139,6 +139,7 @@ def build_observations(results: Sequence[AgentResult], policy: DataPolicy) -> st
         ],
         "evidence": [_evidence(e, policy) for r in results for e in r.evidence],
         "limitations": [x for r in results for x in r.limitations],
+        "scope_notes": [x for r in results for x in r.scope_notes],
     }
     # 들여쓰기 없이 한 줄로 만들어 모델 입력 크기를 줄입니다(Service 근거는 수십 KB).
     text = json.dumps(payload, ensure_ascii=False)

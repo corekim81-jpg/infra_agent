@@ -287,7 +287,7 @@ async def test_service_focus_checks_upstream_issue_workloads() -> None:
         "Service 이상 대상 frontend: 이름이 같은 워크로드가 여러 네임스페이스(otel-demo, shop)에 "
         "있어 흐름을 합쳐 계산함"
     ) in result.limitations
-    assert FOCUS_NOTE in result.limitations
+    assert FOCUS_NOTE in result.scope_notes
     assert any(x.startswith("Service 이상 대상 checkout은") for x in result.limitations)
     # 워크로드 쌍이 아니라 한쪽 워크로드로만 집계 (시계열 수 제한)
     queried = [q for q, _ in fake.queries]
@@ -434,7 +434,7 @@ async def test_service_focus_skipped_or_unlabeled() -> None:
     _workload_flows(ctx, fake)
     plain = await _run(ctx, fake)  # 선행 Service 결과 없음 → 집중 확인 조회 안 함
     assert not any("source_workload) (rate(" in q for q, _ in fake.queries)
-    assert FOCUS_NOTE not in plain.limitations
+    assert FOCUS_NOTE not in plain.scope_notes
 
     fake2 = ExprProm()
     _fill(ctx, fake2)
@@ -505,8 +505,8 @@ async def test_counts_ratios_and_context() -> None:
         "DNS 질의(현재, 5분): 전체 2.5건/초, 출발 네임스페이스별 otel-demo 2건/초, "
         "kube-system 0.5건/초"
     ) in by
-    assert COUNT_NOTE in result.limitations and DROP_REASON_NOTE in result.limitations
-    assert any("DNS 응답 코드" in x for x in result.limitations)
+    assert COUNT_NOTE in result.scope_notes and DROP_REASON_NOTE in result.scope_notes
+    assert any("DNS 응답 코드" in x for x in result.scope_notes)
     queried = [q for q, _ in fake.queries]
     assert any("increase(hubble_drop_total{}[1800s])" in q for q in queried)
     assert any("rate(hubble_flows_processed_total{}[5m])" in q for q in queried)

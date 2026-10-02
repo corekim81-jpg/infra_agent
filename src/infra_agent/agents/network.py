@@ -205,7 +205,7 @@ class NetworkAgent:
         targets = context_targets(ctx)
         self._drops = None
         col = Collector()
-        col.limit(SCOPE_NOTE)
+        col.note(SCOPE_NOTE)
         # Hubble 항목의 네임스페이스·워크로드 필터는 도착(destination) 기준입니다.
         hubble_filtered = bool({TargetKind.NAMESPACE, TargetKind.WORKLOAD} & set(targets))
         self._scope_suffix = " (도착 기준)" if hubble_filtered else ""
@@ -362,9 +362,9 @@ class NetworkAgent:
                 "analysis.benign_drop_reasons 설정에 따라 경고가 아닌 정보로 표시함"
             )
         if happened:
-            col.limit(COUNT_NOTE)
+            col.note(COUNT_NOTE)
             if check.key == "network.drops_increase":
-                col.limit(DROP_REASON_NOTE)
+                col.note(DROP_REASON_NOTE)
             if len(happened) > self._cfg.top_n:
                 col.limit(
                     f"{check.key}: 발생 대상 {len(happened)}개 중 상위 {self._cfg.top_n}개만 표시"
@@ -607,7 +607,7 @@ class NetworkAgent:
                 stale.append(name)
                 continue
             if not noted:
-                col.limit(FOCUS_NOTE)
+                col.note(FOCUS_NOTE)
                 if self._scope_suffix:
                     col.limit(FOCUS_FILTER_NOTE)
                 noted = True

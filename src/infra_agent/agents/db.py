@@ -242,7 +242,7 @@ class DbAgent:
         """`upstream`(Service Agent 결과)은 중복 조회를 피하는 데만 씁니다."""
         targets = context_targets(ctx)
         col = Collector()
-        col.limit(SCOPE_NOTE)
+        col.note(SCOPE_NOTE)
         span_reused = _service_has_db_spans(upstream or {})
         compare = ctx.intent in (Intent.COMPARE, Intent.ANOMALY) and ctx.baseline_range is not None
         for check in CHECKS:
@@ -274,7 +274,7 @@ class DbAgent:
             await self._no_data(check, result, ctx, targets, col)
             return
         if check.key.startswith("db.pool_utilization"):
-            col.limit(POOL_NOTE)
+            col.note(POOL_NOTE)
         if check.kind is Kind.CONTEXT:
             self._context(check, result, rows, col)
         elif check.kind is Kind.COUNT:
@@ -448,7 +448,7 @@ class DbAgent:
                 )
             )
         if happened:
-            col.limit(COUNT_NOTE)
+            col.note(COUNT_NOTE)
             return
         if not is_fresh(result, self._cfg):
             col.limit(f"{check.key}: 데이터 최신성을 확인하지 못해 발생 여부를 판단하지 않음")
