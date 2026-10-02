@@ -770,3 +770,65 @@ async def test_metric_flagged_pod_missing_from_api_is_noted(tmp_path: Path) -> N
             await _run_agent(FakeKubeApi(pods=[pod("gone-1")]), tmp_path, ctx, prom)
         ).limitations
     )
+
+
+# --- 클러스터 내부(in-cluster) 인증
+
+
+def _sa_dir(tmp_path: Path, token: str = SYN_TOKEN) -> Path:
+    sa = tmp_path / "serviceaccount"
+    sa.mkdir(exist_ok=True)
+    (sa / "token").write_text(token + "\n", encoding="utf-8")
+    (sa / "ca.crt").write_text("synthetic-ca", encoding="utf-8")
+    return sa
+
+
+IN_CLUSTER_ENV = {"KUBERNETES_SERVICE_HOST": "10.43.0.1", "KUBERNETES_SERVICE_PORT": "443"}
+
+
+def test_in_cluster_access(tmp_path: Path) -> None:
+    from infra_agent.datasources.kubernetes import access_in_cluster
+
+    access = access_in_cluster(IN_CLUSTER_ENV, _sa_dir(tmp_path))
+    assert access.server == "https://10.43.0.1:443" and access.context == "in-cluster"
+    assert access.token == SYN_TOKEN and access.token_file and access.ca_file
+    assert not access.insecure and SYN_TOKEN not in repr(access)
+    v6 = access_in_cluster(
+        {**IN_CLUSTER_ENV, "KUBERNETES_SERVICE_HOST": "fd00::1"}, tmp_path / "serviceaccount"
+    )
+    assert v6.server == "https://[fd00::1]:443"
+
+
+def test_in_cluster_requires_pod_environment(tmp_path: Path) -> None:
+    from infra_agent.datasources.kubernetes import access_in_cluster
+
+    with pytest.raises(MissingCredentialError, match="클러스터 내부 실행이 아닙니다"):
+        access_in_cluster({}, _sa_dir(tmp_path))
+    with pytest.raises(MissingCredentialError, match="automountServiceAccountToken"):
+        access_in_cluster(IN_CLUSTER_ENV, tmp_path / "missing")
+    cfg = KubernetesConfig(enabled=True, auth="in_cluster")  # type: ignore[arg-type]
+    with pytest.raises(MissingCredentialError):
+        access_from_config(cfg, environ={})
+
+
+async def test_rotated_service_account_token_is_reloaded(tmp_path: Path) -> None:
+    import os
+
+    from infra_agent.datasources.kubernetes import access_in_cluster
+
+    sa = _sa_dir(tmp_path, "old-synthetic-token-000000")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["Authorization"])
+        return httpx.Response(200, json={"gitVersion": "v1.31.0-synthetic"})
+
+    access = access_in_cluster(IN_CLUSTER_ENV, sa)
+    async with KubernetesClient(access, transport=httpx.MockTransport(handler)) as client:
+        await client.version()
+        (sa / "token").write_text("new-synthetic-token-111111", encoding="utf-8")
+        stamp = (sa / "token").stat().st_mtime + 5
+        os.utime(sa / "token", (stamp, stamp))
+        await client.version()
+    assert seen == ["Bearer old-synthetic-token-000000", "Bearer new-synthetic-token-111111"]
+    assert "new-synthetic-token-111111" not in redact("token new-synthetic-token-111111")

@@ -349,7 +349,7 @@ DataSource (인터페이스)
 ## 9. 보안
 
 - **읽기 전용:** 도구 계층에 쓰기 작업을 제공하지 않습니다. Kubernetes는 `get/list/watch`만 허용하는 전용 ServiceAccount/RBAC를 사용하고 `secrets` 리소스 조회 권한은 부여하지 않습니다.
-- **Kubernetes 계정:** 관리자 kubeconfig를 프로그램에 사용하지 않습니다. 전용 읽기 계정의 kubeconfig 경로만 설정으로 받고, ServiceAccount 토큰 형식만 허용합니다(클라이언트 인증서·exec 플러그인·auth-provider·사용자 이름/비밀번호·가장 설정은 거부). 서버 인증서를 검증하지 않는 `insecure-skip-tls-verify`는 토큰이 노출될 수 있어 설정에서 명시적으로 허용(`allow_insecure_tls`)한 경우에만 쓰고, 답변 한계에 표시합니다. 클라이언트는 허용 목록 리소스의 목록 조회(GET)만 보내며, 유일한 POST는 저장되지 않는 권한 점검(`SelfSubjectRulesReview`)입니다. 권한 점검에서 쓰기·Pod 실행·프록시·secrets 읽기 권한이 보이면 조회하지 않습니다. RBAC 매니페스트는 `deploy/rbac/infra-agent-reader.yaml`입니다.
+- **Kubernetes 계정:** 관리자 kubeconfig를 프로그램에 사용하지 않습니다. 전용 읽기 계정의 kubeconfig 경로만 설정으로 받고, ServiceAccount 토큰 형식만 허용합니다(클라이언트 인증서·exec 플러그인·auth-provider·사용자 이름/비밀번호·가장 설정은 거부). 서버 인증서를 검증하지 않는 `insecure-skip-tls-verify`는 토큰이 노출될 수 있어 설정에서 명시적으로 허용(`allow_insecure_tls`)한 경우에만 쓰고, 답변 한계에 표시합니다. 클라이언트는 허용 목록 리소스의 목록 조회(GET)만 보내며, 유일한 POST는 저장되지 않는 권한 점검(`SelfSubjectRulesReview`)입니다. 권한 점검에서 쓰기·Pod 실행·프록시·secrets 읽기 권한이 보이면 조회하지 않습니다. RBAC 매니페스트는 `deploy/rbac/infra-agent-reader.yaml`입니다. 클러스터 내부 실행(`auth: in_cluster`, #39)에서는 kubeconfig 대신 Pod에 마운트된 그 계정의 토큰을 쓰고(교체되면 다시 읽음), 같은 권한 점검을 적용합니다. 컨테이너는 비루트·읽기 전용 루트 파일시스템으로 실행합니다(environment.md 1.2절).
 - **모델 SDK 제한:** Claude Agent SDK의 내장 파일·셸 도구와 로컬 설정 로딩을 비활성화하고, 에이전트별 읽기 전용 도구만 허용합니다(10.1절).
 - **모델 입력 범위:** 외부 모델로 보내는 데이터는 `llm.data_policy`로 제한합니다(10.2절).
 - **비밀값 보호:** 인증정보를 코드·Git·모델 입력·답변·로그에 남기지 않습니다. 로그 출력 전에 토큰·비밀번호 패턴을 마스킹합니다.

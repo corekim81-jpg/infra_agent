@@ -1,0 +1,45 @@
+# 클러스터 내부에서 질문 한 건을 실행하는 Job 예시 (HTTP API 제공 전의 임시 실행 방법).
+# args의 질문을 바꿔 적용하고, 답변은 로그에서 봅니다.
+#   kubectl apply -f deploy/k8s/job-ask.yaml
+#   kubectl -n infra-agent logs job/infra-agent-ask
+#   kubectl -n infra-agent delete job infra-agent-ask
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: infra-agent-ask
+  namespace: infra-agent
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: infra-agent-reader
+      automountServiceAccountToken: true   # ServiceAccount 기본값은 false, 이 Pod에서만 켭니다
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: infra-agent
+          image: infra-agent:dev            # 빌드한 이미지 이름으로 바꾸세요
+          imagePullPolicy: IfNotPresent
+          args: ["ask", "--no-llm", "Kubernetes에서 재시작하거나 Pending 상태인 Pod를 확인해 줘"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/infra-agent, readOnly: true}
+            - {name: var, mountPath: /opt/infra-agent/var}
+      volumes:
+        - name: config
+          configMap:
+            name: infra-agent-config
+        - name: var
+          emptyDir: {}
