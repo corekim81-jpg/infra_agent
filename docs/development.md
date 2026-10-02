@@ -1,7 +1,7 @@
 # 개발 가이드
 
 > **상태: 8b단계 (#35) 구현, 개발 서버 live 확인 완료.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29), Kubernetes API 읽기 전용 연동(#35: 전용 읽기 계정 kubeconfig, 권한 점검, Pod 상태·Warning 이벤트, RBAC 매니페스트)이 있습니다.
-> Kubernetes API 연동은 개발 서버에서 live 확인했습니다(2026-10-02). 분석 구간에 Warning 이벤트가 없어 실제 이벤트 표시는 아직 확인하지 못했습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
+> Kubernetes API 연동은 개발 서버에서 live 확인했습니다(2026-10-02, 테스트용 Pod로 Pending 사유·Warning 이벤트 표시 확인). 구간 내 비정상 종료 사유 표시는 아직 확인하지 못했습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
 ## 1. 개발 환경
@@ -139,7 +139,7 @@ infra_agent/
 | 6 | 모델 계층 | `LLMClient`, 가짜 모델, Claude Agent SDK 어댑터(내장 도구 비활성 검증), `data_policy` 강제, 질문 해석, 근거 검증 | 단위 테스트 통과, 내장 도구 차단 테스트 통과 | 5 | 완료 (#15, PR #16; 개발 서버 모델 live 3건 통과 2026-09-29. 관측 표시값 보완 #17) |
 | 7 | 조정 계층 | 실행 계획 템플릿, 실행기(동시 실행, 타임아웃, 재시도, 예산, 부분 실패) | 가짜 에이전트로 병렬·순차·실패 시나리오 테스트 | 6 | 완료 (#19, PR #20; 개발 서버 live 12건 통과 2026-09-29) |
 | 8 | Kubernetes Agent | Prometheus `k8s_*` 기반 재시작·상태 분석, 이벤트(수집 위치 확인 후) | "재시작·Pending Pod" 질문 답변 | 7 | 완료 (#21, PR #22; 개발 서버 live 14건 통과 2026-09-29. 이벤트는 수집 위치 미확인으로 제외, 8b에서 확인) |
-| 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트(`deploy/rbac/`), 토큰 kubeconfig만 허용하는 클라이언트, 권한 점검(`check`·질문 처리), Kubernetes Agent 전용 조회 도구(Pod 상태·Warning 이벤트) | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 완료 (#35; 개발 서버 `check` 정상·live 4건 통과 2026-10-02. 실제 Warning 이벤트 표시는 미확인) |
+| 8b | Kubernetes API 연동 | 읽기 전용 RBAC 매니페스트(`deploy/rbac/`), 토큰 kubeconfig만 허용하는 클라이언트, 권한 점검(`check`·질문 처리), Kubernetes Agent 전용 조회 도구(Pod 상태·Warning 이벤트) | 전용 계정으로만 조회, 쓰기 권한 감지 시 경고 | 8, 사용자 계정 준비 | 완료 (#35; 개발 서버 `check` 정상·live 4건 통과, 테스트용 Pod로 Pending 사유·Warning 이벤트 표시 확인 2026-10-02. 비정상 종료 사유 표시는 미확인) |
 | 9 | Loki·Tempo와 Service Agent | 로그·트레이스 클라이언트, 요청량·오류율·지연 분석, 로그·트레이스 연결 | "오류 증가 시간대 로그·트레이스" 질문 답변 | 7 | 완료 (#23, PR #24; 개발 서버 live 4건 통과 2026-09-30, 병합 후 느린 트레이스 검색식 포함 재확인) |
 | 10 | DB Agent | PostgreSQL 지표, 앱 커넥션 풀, DB 작업 지연, Tempo DB span(가용 시) | "커넥션 풀 부족·쿼리 지연" 질문 답변, 미확인 항목 한계 표시 | 9 | 완료 (#25, PR #26; 개발 서버 live 3건 통과 2026-09-30) |
 | 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 완료 (#27, PR #28; 개발 서버 live 2건 통과 2026-09-30) |
