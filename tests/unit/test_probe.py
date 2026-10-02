@@ -27,7 +27,8 @@ async def test_all_sources_ready() -> None:
         load_settings(environ=ENV_ALL), environ={}, transport_factory=fake.transport_factory
     )
     by_name = {s.name: s for s in statuses}
-    assert all(s.reachable and s.ready for s in statuses)
+    assert not by_name["kubernetes"].enabled
+    assert all(s.reachable and s.ready for s in statuses if s.enabled)
     assert by_name["prometheus"].version == "3.0.0-synthetic"
     assert by_name["loki"].version == "3.4.0-synthetic"
     assert by_name["tempo"].version == "2.7.0-synthetic"

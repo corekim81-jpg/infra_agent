@@ -25,6 +25,7 @@
 | Prometheus | `http://127.0.0.1:19090` |
 | Loki | `http://127.0.0.1:13100` |
 | Tempo | `http://127.0.0.1:13200` |
+| Kubernetes API (선택, #35) | 예: `https://127.0.0.1:16443` — 로컬 포트는 사용자가 정하고, kubeconfig의 `server`에 씁니다 |
 
 - 터널 명령과 원격 주소는 저장소에 기록하지 않습니다(공개 저장소). 개인 설정 또는 로컬 문서로 관리합니다.
 - WSL, Docker, 클라우드 실행 환경에서는 `127.0.0.1`이 Windows 호스트의 터널을 가리키지 않을 수 있으므로 접속 경로를 별도로 확인합니다.
@@ -74,7 +75,7 @@
 | `INFRA_AGENT_PROFILE` | 프로필 덮어쓰기 | 아니오 | 구현됨 |
 | `INFRA_AGENT__<SECTION>__<KEY>` | 설정 항목 덮어쓰기. `__`로 중첩 구분, 대소문자 무관, 값은 YAML 스칼라로 해석(`true`, `15`, `null`). 예: `INFRA_AGENT__DATASOURCES__PROMETHEUS__URL` | 아니오 | 구현됨 |
 | `token_env`로 지정한 변수 (예: `INFRA_AGENT_PROMETHEUS_TOKEN`) | 데이터 소스 인증이 필요해질 경우의 토큰 | 예 | 구현됨 (Bearer 헤더, 값은 마스킹 등록) |
-| `INFRA_AGENT_KUBECONFIG` (`kubeconfig_env` 기본값) | 전용 읽기 계정 kubeconfig 파일 경로 | 파일 내용은 비밀 | 설정 필드만 구현 |
+| `INFRA_AGENT_KUBECONFIG` (`kubeconfig_env` 기본값) | 전용 읽기 계정 kubeconfig 파일 경로 (ServiceAccount 토큰 형식만 허용) | 파일 내용은 비밀 | 구현됨 (#35, 토큰은 마스킹 등록) |
 | `ANTHROPIC_API_KEY` | Claude Agent SDK 인증 (SDK가 직접 읽음, 프로그램은 값을 읽거나 기록하지 않음). Claude Code 로그인으로 대체 가능 | 예 | 구현됨 (#15) |
 | `INFRA_AGENT_LIVE_TESTS` | `1`일 때만 `live` 테스트 실행 | 아니오 | 구현됨 (`tests/conftest.py`) |
 
@@ -140,9 +141,53 @@
 
 ### 3.5 Kubernetes API
 
-- 전용 ServiceAccount와 읽기 전용 ClusterRole(`get`, `list`, `watch`; `secrets` 제외)을 만든 뒤, 그 계정의 kubeconfig로만 연결합니다.
-- **관리자 kubeconfig는 프로그램에 사용하지 않습니다.** 프로그램 시작 시 권한 점검(`SelfSubjectRulesReview` 등)으로 쓰기 권한이 있으면 경고하는 방안을 구현 단계에서 검토합니다.
-- 읽기 계정 준비 전에는 Kubernetes Agent가 Prometheus의 k8s_cluster 계열 지표로 동작합니다(구현됨, #21). Pending 사유·종료 사유 등 상세 정보는 API 연동 후 확인할 수 있습니다.
+- 전용 ServiceAccount와 읽기 전용 ClusterRole(`get`, `list`, `watch`; `secrets` 제외)을 만든 뒤, 그 계정의 토큰 kubeconfig로만 연결합니다. 매니페스트: [`deploy/rbac/infra-agent-reader.yaml`](../deploy/rbac/infra-agent-reader.yaml) (Pod·노드·네임스페이스·이벤트, apps 워크로드, Job·CronJob, HPA).
+- **관리자 kubeconfig는 프로그램에 사용하지 않습니다.** 프로그램은 kubeconfig 사용자에 클라이언트 인증서·exec 플러그인·auth-provider·사용자 이름/비밀번호·가장(`as`) 설정이 있으면 거부합니다. k3d가 만드는 기본 kubeconfig는 클라이언트 인증서 형식이므로 쓸 수 없습니다.
+- **권한 점검:** `check`와 질문 처리 때 `SelfSubjectRulesReview`로 권한을 확인합니다(`default` 네임스페이스, 질문에 네임스페이스 대상이 있으면 그 네임스페이스도. ClusterRole 권한 포함). 쓰기 동사, Pod 실행·프록시 하위 리소스(`pods/exec` 등, get 포함), secrets 읽기 권한이 보이거나 권한 목록을 확인하지 못하면 `check`는 `not_read_only`로 실패하고, Kubernetes Agent는 API를 조회하지 않습니다. 다른 네임스페이스에만 묶인 Role은 보이지 않으므로, 전용 계정에는 매니페스트의 ClusterRole 외 권한을 주지 않습니다.
+- 계정을 설정하지 않으면(`enabled: false`) Kubernetes Agent는 Prometheus의 k8s_cluster 계열 지표로만 동작합니다(#21).
+- 설정: `datasources.kubernetes`의 `enabled`, `kubeconfig_env`(기본 `INFRA_AGENT_KUBECONFIG`), `context`(기본 current-context), `timeout_seconds`(기본 15), `max_items`(목록 조회 최대 객체 수, 기본 2000. 넘으면 일부만 본 것으로 표시하고 "해당 없음"을 말하지 않음), `allow_insecure_tls`(기본 false).
+
+**준비 절차 (사용자 작업, 개발 서버 기준)**
+
+1~2단계는 **k3d가 실행 중인 서버**(관리자 kubectl이 있는 곳)에서, 3~4단계는 **프로그램을 실행하는 Windows 호스트**에서 합니다. 서버에 저장소가 없으면 `deploy/rbac/`의 두 파일만 복사하거나 내려받아 실행합니다. Windows에서 복사한 스크립트는 줄바꿈(CRLF)을 `sed -i 's/\r$//' make-reader-config.sh`로 정리합니다.
+
+1. 클러스터 관리자 kubectl이 있는 곳(개발 서버)에서 매니페스트를 적용합니다.
+   ```bash
+   kubectl apply -f deploy/rbac/infra-agent-reader.yaml
+   ```
+2. 프로그램이 접속할 API 서버 주소로 토큰 kubeconfig를 만듭니다. Windows 호스트에서 SSH 터널로 접속한다면 터널의 로컬 주소를 씁니다(1.1절). 토큰은 기본 168시간 뒤 만료되므로 만료되면 다시 만듭니다.
+   ```bash
+   umask 077
+   deploy/rbac/make-reader-config.sh https://127.0.0.1:16443 168h > infra-agent-reader.kubeconfig
+   ```
+   관리자 kubeconfig는 CA 인증서를 읽고 토큰을 발급하는 데만 쓰이며 결과 파일에는 들어가지 않습니다. 결과 파일(`*.kubeconfig`)은 `.gitignore` 대상이며 커밋하지 않습니다.
+3. 결과 파일을 프로그램 실행 위치로 옮기고, SSH 터널에 API 서버 포트를 추가합니다(`-L <로컬 포트>:127.0.0.1:<API 서버 포트>`, 원격 주소는 저장소에 기록하지 않음). API 서버 포트는 서버에서 `kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'`로 확인합니다.
+4. 경로를 환경 변수로 지정하고 설정에서 켭니다.
+   ```powershell
+   $env:INFRA_AGENT_KUBECONFIG = "C:\path\to\infra-agent-reader.kubeconfig"
+   # config/local.yaml: datasources.kubernetes.enabled: true
+   infra-agent check --config config/local.yaml   # kubernetes: 정상 (버전 ...) 확인
+   ```
+5. API 서버 인증서에 접속 주소(예: `127.0.0.1`)가 포함되어야 TLS 검증이 됩니다. k3s·k3d 기본 인증서에는 `127.0.0.1`·`localhost`가 들어 있습니다. kubeconfig의 `insecure-skip-tls-verify`는 토큰이 노출될 수 있어 기본으로 거부하며, 개발 환경에서만 `allow_insecure_tls: true`로 허용할 수 있습니다(`check`와 답변 한계에 표시).
+
+**API에서 쓰는 정보 (#35)**
+
+| 조회 | 경로 | 근거 ID | 사용 |
+| --- | --- | --- | --- |
+| 권한 점검 | `POST /apis/authorization.k8s.io/v1/selfsubjectrulesreviews` | `k8s_api.permissions@current` | 쓰기·secrets 권한 감지 |
+| Pod 상태 | `GET /api/v1/pods` (네임스페이스 대상이면 `/api/v1/namespaces/<ns>/pods`) | `k8s_api.pods@current` | Pending 사유, 컨테이너 대기 사유, 구간 내 비정상 종료 사유 |
+| Warning 이벤트 | `GET /api/v1/events?fieldSelector=type=Warning` | `k8s_api.events@window` | 대상·사유별 이벤트 (마지막 관측 시각이 분석 구간 안) |
+
+- Kubernetes 이벤트는 API 서버 보관 기간(기본 1시간)이 지나면 사라집니다. 구간 시작이 1시간보다 오래되었으면(긴 구간 또는 과거 구간) 답변 한계에 표시하고 "Warning 이벤트 없음"이라고 말하지 않습니다.
+- Pod 상태는 조회 시점의 현재 상태이므로, 분석 구간 끝이 실제 현재 시각에서 `stale_after_seconds`보다 멀면 쓰지 않습니다.
+- **개발 서버 live 결과(#35, 2026-10-02):** `check`에서 Kubernetes API 정상(k3s v1.35), `tests/live/test_live_kubernetes.py` 4건 통과.
+  - 전용 읽기 계정은 서버에서 `kubectl auth can-i`로 Pod 생성·secrets 조회가 모두 거부됨을 확인했고, 프로그램의 권한 점검도 통과했습니다.
+  - SSH 터널의 `127.0.0.1` 주소로 `certificate-authority-data` TLS 검증이 통과했습니다. k3d API 서버 포트는 클러스터를 다시 만들면 바뀔 수 있으므로 터널 설정을 함께 확인합니다.
+  - 권한 점검·Pod 목록·Warning 이벤트 조회 3개 모두 오류 없이 실행됐고, Pod 목록은 `max_items` 안에서 잘리지 않았습니다.
+  - 평소 상태에서는 Pending·대기·비정상 종료 Pod와 Warning 이벤트가 없었고, 답변도 "해당 대상 없음"·"없음"으로 일치했습니다.
+  - **문제 상태 확인(테스트용 네임스페이스에 존재하지 않는 이미지의 Pod를 만들어 확인 후 삭제):** 지표 판정이 Pending Pod·not ready 컨테이너를 경고했고, API가 Pending 사유(컨테이너 대기 ImagePullBackOff와 메시지)를 정보로 덧붙였습니다. 같은 컨테이너의 대기 사실은 따로 만들어지지 않았고(중복 집계 없음), Warning 이벤트는 대상·사유별 누적 횟수와 마지막 시각으로 표시됐습니다. 이때 지표의 Pod phase 값 1이 API의 Pending과 일치함도 확인했습니다.
+  - **아직 확인하지 못한 것:** 구간 내 비정상 종료 사유(OOMKilled 등)와 재시작을 반복하는 실행 중 Pod의 대기 사유(CrashLoopBackOff) 표시는 가상 데이터 테스트로만 검증했습니다.
+  - 준비 절차의 kubectl 명령은 k3d가 실행 중인 서버에서, 프로그램은 Windows 호스트에서 실행했습니다(서버에 저장소가 없어도 두 파일만 받아 실행 가능).
 
 ### 3.6 DB 분석 범위
 
@@ -262,6 +307,6 @@ infra-agent catalog --execute       # 각 조회를 Prometheus에 실행: 정상
 | 항목 | 필요한 시점 |
 | --- | --- |
 | SSH 터널 실행 (1.1절 포트) | 연동 테스트, 탐색 |
-| Kubernetes 전용 읽기 계정과 kubeconfig | Kubernetes API 연동 단계 |
+| Kubernetes 전용 읽기 계정과 kubeconfig (3.5절 준비 절차) | Kubernetes API 연동 live 확인 (8b) |
 | Claude Agent SDK 인증 (`ANTHROPIC_API_KEY` 또는 Claude Code 로그인) | 모델 연동 단계 (6단계) |
 | 운영 환경의 모델 데이터 범위 결정 (`llm.data_policy`, 개발 환경은 `full`로 결정) | 운영 데이터를 모델에 전달하기 전 |
