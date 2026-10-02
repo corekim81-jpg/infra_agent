@@ -86,6 +86,8 @@ flowchart TD
   - Warning 이벤트(`fieldSelector=type=Warning`)는 마지막 관측 시각이 분석 구간 안인 것만 대상·사유별로 묶어 정보로 표시합니다. 횟수는 누적 값입니다. 구간 시작이 이벤트 보관 기간(기본 1시간)보다 오래되었으면 한계로 표시하고 "이벤트 없음"이라고 말하지 않습니다.
   - 상태·이벤트 메시지는 외부 데이터로 정리(제어문자 제거·마스킹·200자 제한)하며, 근거에는 판정에 필요한 필드만 남깁니다(Pod 명세의 환경 변수·명령은 남기지 않음).
   - 요청 대상(네임스페이스·노드·Pod·컨테이너·워크로드)으로 거릅니다. 워크로드는 Pod의 컨트롤러(ownerReferences: ReplicaSet `<이름>-<해시>`, StatefulSet·DaemonSet·Job)로 확인합니다(이름 접두어만 보면 `frontend`가 `frontend-proxy`를 포함하게 됨). 대상에 해당하는 Pod가 없거나, 목록이 `max_items`에서 잘렸으면 "해당 없음" 대신 한계로 표시합니다.
+  - 스케줄된 Pod가 정상 시작 과정(ContainerCreating·PodInitializing)에 있고 생성 후 5분 안이면 경고하지 않고 "시작 중" 정보로 표시합니다. 그보다 오래 머물거나 다른 대기 사유(ImagePullBackOff 등)이면 경고합니다(#41).
+  - 현재 상태 지표 판정(Pod phase, not ready 컨테이너)이 문제로 본 Pod가 API의 전체 Pod 목록에 없으면, 이미 삭제됐고 지표에 반영되기 전일 수 있음을 한계에 밝힙니다. 지표 판정은 바꾸지 않으며, 목록이 전체가 아니면(Pod·노드·워크로드 대상 필터, 잘림) 말하지 않습니다(#41).
   - 같은 문제를 두 번 세지 않습니다: Pending 사유가 컨테이너 대기이면 대기 사실을 따로 만들지 않고, 대기 중인 컨테이너의 구간 내 종료는 한 사실로 묶어 더 높은 심각도로 표시합니다.
 - Pod phase 값(1=Pending … 5=Unknown)은 OTel k8s_cluster 수신기 정의를 따른 가정이며 답변의 분석 범위·해석 기준에 표시합니다(1=Pending은 개발 서버에서 Kubernetes API 값과 일치 확인, #35).
 - Server Agent가 제안한 "limit 근접 컨테이너의 OOM·재시작 확인"은 같은 요청에서 Kubernetes Agent가 성공하면 종합 단계에서 뺍니다.

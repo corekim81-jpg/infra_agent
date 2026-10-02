@@ -716,3 +716,57 @@ def test_rbac_manifest_is_read_only() -> None:
     sa = next(d for d in docs if d["kind"] == "ServiceAccount")
     assert sa["automountServiceAccountToken"] is False
     assert assess_rules(RulesReview("default", tuple(role["rules"]), False)).ok
+
+
+# --- 시작 중인 Pod, 삭제된 대상 (#41)
+
+
+def _starting(name: str, minutes_ago: float, reason: str = "ContainerCreating"):  # type: ignore[no-untyped-def]
+    return pod(
+        name,
+        phase="Pending",
+        scheduled={"status": "True"},
+        containers=[container("app", ready=False, waiting={"reason": reason})],
+        created=_iso(minutes_ago),
+    )
+
+
+async def test_starting_pod_is_not_a_warning(tmp_path: Path) -> None:
+    fake = FakeKubeApi(
+        pods=[
+            _starting("new-1", 0.2),
+            _starting("stuck-1", 20),
+            _starting("badimg-1", 0.2, "ImagePullBackOff"),
+        ]
+    )
+    facts = _facts(await _run_agent(fake, tmp_path, _ctx()))
+    by_pod = {
+        s.split(": ", 1)[1].split(" — ")[0]: (s, sev) for s, sev in facts.items() if "Pending" in s
+    }
+    new, sev_new = by_pod["otel-demo/new-1"]
+    assert sev_new is Severity.INFO and new.endswith("(생성 후 12초, 시작 중)")
+    assert by_pod["otel-demo/stuck-1"][1] is Severity.WARNING  # 20분째 ContainerCreating
+    assert by_pod["otel-demo/badimg-1"][1] is Severity.WARNING
+
+
+async def test_metric_flagged_pod_missing_from_api_is_noted(tmp_path: Path) -> None:
+    ctx = _ctx()
+    prom = ExprProm()
+    probe = _prom_tool(None)  # type: ignore[arg-type]
+    gone = {"k8s_namespace_name": "otel-demo", "k8s_pod_name": "gone-1"}
+    prom.add(
+        probe.build_expr(probe.item("k8s.pod_phase"), "", QueryMode.CURRENT, ctx), [(gone, 4.0)]
+    )
+    fake = FakeKubeApi(pods=[pod("ok-1", containers=[container("c")])])
+    result = await _run_agent(fake, tmp_path, ctx, prom)
+    # 지표 판정은 그대로 두고, 삭제 가능성만 한계에 밝힘
+    assert any("otel-demo/gone-1 Failed" in f.statement for f in result.findings)
+    notes = [x for x in result.limitations if "현재 Pod 목록에는 없는 대상" in x]
+    assert len(notes) == 1 and "otel-demo/gone-1" in notes[0]
+    # API 목록에 있는 Pod는 말하지 않음
+    assert not any(
+        "현재 Pod 목록에는 없는" in x
+        for x in (
+            await _run_agent(FakeKubeApi(pods=[pod("gone-1")]), tmp_path, ctx, prom)
+        ).limitations
+    )

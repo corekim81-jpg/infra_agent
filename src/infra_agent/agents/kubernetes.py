@@ -75,6 +75,10 @@ EVENT_COUNT_NOTE = (
 )
 BENIGN_WAITING = frozenset({"ContainerCreating", "PodInitializing"})
 """정상 시작 과정의 대기 사유 (상세 사실로 표시하지 않음)."""
+STARTUP_GRACE_SECONDS = 300
+"""스케줄된 Pod가 정상 시작 과정(이미지 준비·초기화)에 머물러도 경고하지 않는 시간."""
+STALE_METRIC_KEYS = ("k8s.pod_phase", "k8s.container_not_ready")
+"""현재 상태 지표 판정 중, 대상 Pod가 Kubernetes API에 없으면 삭제된 것으로 볼 수 있는 항목."""
 _EVENT_WORKLOAD_KINDS = frozenset(
     {"Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Job", "CronJob"}
 )
@@ -407,6 +411,7 @@ class KubernetesAgent:
                 details.pods_seen = self._pod_facts(pods, ctx, targets, col, details, found)
                 if pods.status is not ToolStatus.TRUNCATED:
                     pod_names = frozenset(str(r.get("pod", "")) for r in rows_of(pods))
+                    self._note_deleted(pods, targets, col, found)
         events = self._record(
             await api.warning_events(ctx, targets, pod_names), "k8s_api.events", col
         )
@@ -484,7 +489,12 @@ class KubernetesAgent:
                 severity = (
                     Severity.INFO if flagged(pod_ref.name, "k8s.pod_phase") else Severity.WARNING
                 )
-                reason, reason_container = _pending_reason(row, containers)
+                reason, reason_container, starting = _pending_reason(row, containers)
+                age = self._age_seconds(row)
+                if starting and age is not None and age < STARTUP_GRACE_SECONDS:
+                    # 스케줄된 뒤 이미지 준비·초기화 중인 새 Pod는 정상 시작 과정 (경고 아님)
+                    severity = Severity.INFO
+                    reason += f" (생성 후 {age:.0f}초, 시작 중)"
                 pending.append((f"{pod_ref.name} — {reason}", pod_ref, severity))
             for c in containers:
                 name = str(c.get("name", ""))
@@ -551,6 +561,41 @@ class KubernetesAgent:
                 )
             )
         return len(rows)
+
+    def _age_seconds(self, row: Mapping[str, Any]) -> float | None:
+        created = _parse_iso(row.get("created_at"))
+        return None if created is None else max(0.0, (self._clock() - created).total_seconds())
+
+    def _note_deleted(
+        self,
+        pods: ToolResult,
+        targets: Mapping[TargetKind, str],
+        col: Collector,
+        found: Mapping[str, Mapping[str, float]],
+    ) -> None:
+        """지표 판정이 문제로 본 Pod가 API의 Pod 목록에 없으면 삭제 가능성을 한계에 밝힙니다.
+
+        지표(수집·내보내기 주기)는 삭제된 대상을 한동안 계속 보고할 수 있습니다. 지표 판정은
+        바꾸지 않고 알리기만 하며, API 목록이 전체가 아니면(대상 필터, 잘림) 말하지 않습니다."""
+        if set(targets) - {TargetKind.NAMESPACE}:
+            return
+        present = {f"{r.get('namespace', '')}/{r.get('pod', '')}" for r in rows_of(pods)}
+        flagged_pods = {
+            "/".join(name.split("/")[:2])
+            for key in STALE_METRIC_KEYS
+            for name in found.get(key, {})
+            if name.count("/") >= 1
+        }
+        missing = sorted(flagged_pods - present)
+        if missing:
+            shown = ", ".join(missing[: self._cfg.top_n])
+            more = (
+                f" 외 {len(missing) - self._cfg.top_n}개" if len(missing) > self._cfg.top_n else ""
+            )
+            col.limit(
+                f"지표 판정에는 문제로 나오지만 Kubernetes API의 현재 Pod 목록에는 없는 대상: "
+                f"{shown}{more} — 이미 삭제된 것으로 보이며, 지표에 반영되기 전일 수 있음"
+            )
 
     @staticmethod
     def _container_ends(
@@ -709,23 +754,31 @@ def _parse_iso(value: object) -> datetime | None:
 
 def _pending_reason(
     row: Mapping[str, Any], containers: list[dict[str, Any]]
-) -> tuple[str, str | None]:
-    """Pending 사유와, 사유가 컨테이너 대기이면 그 컨테이너 이름.
+) -> tuple[str, str | None, bool]:
+    """Pending 사유, 사유가 컨테이너 대기이면 그 컨테이너 이름, 정상 시작 과정인지.
 
-    우선순위: 스케줄링 실패(PodScheduled=False) > 컨테이너 대기 사유 > Pod 사유."""
+    우선순위: 스케줄링 실패(PodScheduled=False) > 컨테이너 대기 사유 > Pod 사유.
+    스케줄된 Pod의 대기 사유가 모두 `BENIGN_WAITING`이면 정상 시작 과정으로 봅니다."""
     sched = _dict_or_none(row.get("scheduled"))
     if sched and sched.get("status") == "False":
         reason = sched.get("reason") or "스케줄링 안 됨"
         text = f"{reason}: {sched['message']}" if sched.get("message") else str(reason)
-        return text, None
-    for c in containers:
-        wait = _dict_or_none(c.get("waiting"))
-        if wait and wait.get("reason"):
-            text = f"컨테이너 {c.get('name')} 대기 {wait['reason']}"
-            if wait.get("message"):
-                text += f": {wait['message']}"
-            return text, str(c.get("name"))
-    return str(row.get("reason") or "사유 미기록"), None
+        return text, None, False
+    waits = [
+        (c, w) for c in containers if (w := _dict_or_none(c.get("waiting"))) and w.get("reason")
+    ]
+    starting = bool(sched and sched.get("status") == "True") and all(
+        w.get("reason") in BENIGN_WAITING for _, w in waits
+    )
+    # 문제가 있는 대기 사유를 먼저 보여 줍니다.
+    waits.sort(key=lambda cw: cw[1].get("reason") in BENIGN_WAITING)
+    if waits:
+        c, wait = waits[0]
+        text = f"컨테이너 {c.get('name')} 대기 {wait['reason']}"
+        if wait.get("message"):
+            text += f": {wait['message']}"
+        return text, str(c.get("name")), starting
+    return str(row.get("reason") or "사유 미기록"), None, starting
 
 
 def _abnormal_end(

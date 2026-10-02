@@ -159,6 +159,9 @@ def summarize_pod(pod: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "namespace": _name(meta.get("namespace")),
         "pod": _name(meta.get("name")),
+        "created_at": meta.get("creationTimestamp")
+        if _parse_time(meta.get("creationTimestamp"))
+        else None,
         "owner": owner,
         "node": _name(spec.get("nodeName")) or None,
         "phase": _name(status.get("phase")) or "Unknown",

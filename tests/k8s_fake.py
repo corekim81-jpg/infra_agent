@@ -73,12 +73,15 @@ def pod(
     scheduled: dict[str, Any] | None = None,
     containers: list[dict[str, Any]] | None = None,
     owner: tuple[str, str] | None = None,
+    created: str | None = None,
 ) -> dict[str, Any]:
     status: dict[str, Any] = {"phase": phase, "containerStatuses": containers or []}
     if scheduled is not None:
         status["conditions"] = [{"type": "PodScheduled", **scheduled}]
     spec: dict[str, Any] = {"nodeName": node} if node else {}
     meta: dict[str, Any] = {"name": name, "namespace": namespace}
+    if created:
+        meta["creationTimestamp"] = created
     if owner:
         meta["ownerReferences"] = [{"kind": owner[0], "name": owner[1], "controller": True}]
     return {
