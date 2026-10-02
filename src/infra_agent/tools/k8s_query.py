@@ -29,7 +29,6 @@ from infra_agent.datasources.kubernetes import (
     assess_rules,
     is_k8s_name,
     merge_reviews,
-    rules_scope_note,
     summarize_rules,
 )
 from infra_agent.schemas import (
@@ -380,11 +379,8 @@ class KubernetesQueryTool:
             reviews.append(got)
         merged = merge_reviews(reviews)
         report = assess_rules(merged)
-        data = {
-            "problems": list(report.problems),
-            "notes": [*report.notes, rules_scope_note(merged.namespace)],
-            "rules": summarize_rules(merged.resource_rules),
-        }
+        # 근거에는 확인한 권한 규칙(그룹·리소스·동사)을 남깁니다. 판정 결과는 `report`로 전달합니다.
+        data = summarize_rules(merged.resource_rules)
         self._permission = PermissionOutcome(
             self._result(evidence_id, query, None, ToolStatus.OK, data=data), report
         )

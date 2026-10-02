@@ -429,7 +429,7 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | 라벨 값 의미 (`k8s_pod_phase`, 노드 조건, spanmetrics `status_code`·`span_kind`, 커넥션 상태) | 가정 (카탈로그 caveats) | 판정 정확도 | 각 에이전트 구현 시 값 검토 |
 | `k8s_pod_cpu_usage`, spanmetrics 지연 단위 | 가정 (cores, seconds). 노드·컨테이너 CPU는 cores로 검증됨 | 수치 해석 | 해당 에이전트 구현 시 |
 | Kubernetes 이벤트 저장 위치 (Loki 여부) | Kubernetes API로 조회(#35). 보관 기간(기본 1시간)보다 긴 이벤트 이력은 미확인 | Kubernetes Agent | 확장 단계 |
-| Kubernetes 전용 읽기 계정 | 매니페스트·도구 구현됨(#35), 개발 서버 적용·live 확인 전 | Kubernetes API 연동 | 사용자 계정 준비 후 |
+| Kubernetes 전용 읽기 계정 | 개발 서버에 적용·live 확인됨(#35, 2026-10-02). 실제 Warning 이벤트가 있을 때의 표시는 미확인 | Kubernetes API 연동 | 이벤트 발생 시 확인 |
 | 물리 서버 성능 수집 | 없음 (`system_*`는 Pod 단위) | Server Agent 확장 | 확장 단계 |
 | `pg_stat_statements`, 실행 계획, 잠금 그래프 | 수집되지 않음 | DB Agent 확장 | 확장 단계 |
 | DNS 응답 코드 | Hubble 지표에 없음 | Network Agent DNS 오류 분석 | 확장 단계 |

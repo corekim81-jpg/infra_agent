@@ -149,6 +149,8 @@
 
 **준비 절차 (사용자 작업, 개발 서버 기준)**
 
+1~2단계는 **k3d가 실행 중인 서버**(관리자 kubectl이 있는 곳)에서, 3~4단계는 **프로그램을 실행하는 Windows 호스트**에서 합니다. 서버에 저장소가 없으면 `deploy/rbac/`의 두 파일만 복사하거나 내려받아 실행합니다. Windows에서 복사한 스크립트는 줄바꿈(CRLF)을 `sed -i 's/\r$//' make-reader-config.sh`로 정리합니다.
+
 1. 클러스터 관리자 kubectl이 있는 곳(개발 서버)에서 매니페스트를 적용합니다.
    ```bash
    kubectl apply -f deploy/rbac/infra-agent-reader.yaml
@@ -159,7 +161,7 @@
    deploy/rbac/make-reader-config.sh https://127.0.0.1:16443 168h > infra-agent-reader.kubeconfig
    ```
    관리자 kubeconfig는 CA 인증서를 읽고 토큰을 발급하는 데만 쓰이며 결과 파일에는 들어가지 않습니다. 결과 파일(`*.kubeconfig`)은 `.gitignore` 대상이며 커밋하지 않습니다.
-3. 결과 파일을 프로그램 실행 위치로 옮기고, SSH 터널에 API 서버 포트를 추가합니다(원격 주소는 저장소에 기록하지 않음).
+3. 결과 파일을 프로그램 실행 위치로 옮기고, SSH 터널에 API 서버 포트를 추가합니다(`-L <로컬 포트>:127.0.0.1:<API 서버 포트>`, 원격 주소는 저장소에 기록하지 않음). API 서버 포트는 서버에서 `kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'`로 확인합니다.
 4. 경로를 환경 변수로 지정하고 설정에서 켭니다.
    ```powershell
    $env:INFRA_AGENT_KUBECONFIG = "C:\path\to\infra-agent-reader.kubeconfig"
@@ -178,7 +180,12 @@
 
 - Kubernetes 이벤트는 API 서버 보관 기간(기본 1시간)이 지나면 사라집니다. 구간 시작이 1시간보다 오래되었으면(긴 구간 또는 과거 구간) 답변 한계에 표시하고 "Warning 이벤트 없음"이라고 말하지 않습니다.
 - Pod 상태는 조회 시점의 현재 상태이므로, 분석 구간 끝이 실제 현재 시각에서 `stale_after_seconds`보다 멀면 쓰지 않습니다.
-- 개발 서버 live 확인(`tests/live/test_live_kubernetes.py`의 API 테스트)은 사용자가 계정을 준비한 뒤 실행합니다(2026-10-01 기준 미실행).
+- **개발 서버 live 결과(#35, 2026-10-02):** `check`에서 Kubernetes API 정상(k3s v1.35), `tests/live/test_live_kubernetes.py` 4건 통과.
+  - 전용 읽기 계정은 서버에서 `kubectl auth can-i`로 Pod 생성·secrets 조회가 모두 거부됨을 확인했고, 프로그램의 권한 점검도 통과했습니다.
+  - SSH 터널의 `127.0.0.1` 주소로 `certificate-authority-data` TLS 검증이 통과했습니다. k3d API 서버 포트는 클러스터를 다시 만들면 바뀔 수 있으므로 터널 설정을 함께 확인합니다.
+  - 권한 점검·Pod 목록·Warning 이벤트 조회 3개 모두 오류 없이 실행됐고, Pod 목록은 `max_items` 안에서 잘리지 않았습니다.
+  - 실행 시점에 Pending·대기·비정상 종료 Pod와 분석 구간 내 Warning 이벤트가 없어, **실제 문제 상태·이벤트가 있을 때의 표시는 아직 확인하지 못했습니다**(가상 데이터 테스트로만 검증).
+  - 준비 절차의 kubectl 명령은 k3d가 실행 중인 서버에서, 프로그램은 Windows 호스트에서 실행했습니다(서버에 저장소가 없어도 두 파일만 받아 실행 가능).
 
 ### 3.6 DB 분석 범위
 
