@@ -67,7 +67,10 @@ SCOPE_NOTE = (
     "Network 분석은 Cilium/Hubble·kubeletstats·cAdvisor 지표 기준입니다. DNS 응답 코드와 "
     "네트워크 지연(RTT)은 수집되지 않아 DNS 오류율·네트워크 지연은 판단하지 않습니다."
 )
-COUNT_NOTE = "구간 내 발생 수(드롭·오류)는 Prometheus increase()의 추정값입니다."
+COUNT_NOTE = (
+    "구간 내 발생 수(드롭·오류)는 Prometheus increase()의 추정값입니다. Hubble 드롭·이벤트 유실은 "
+    "구간 안에서 처음 나타난 대상이면 누적 값을 발생 수로 셉니다."
+)
 DROP_REASON_NOTE = (
     "Hubble 드롭 사유 중에는 정책 거부처럼 의도된 차단도 있어, 드롭이 곧 장애를 뜻하지는 않습니다"
     "(사유와 출발·도착을 함께 확인)."
