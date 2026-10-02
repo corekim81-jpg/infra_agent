@@ -1,0 +1,62 @@
+# 예시: 데이터 소스 네임스페이스가 들어오는 트래픽을 기본 차단(default-deny)하는 클러스터에서,
+# infra-agent 네임스페이스의 Pod가 Prometheus·Loki·Tempo 조회 포트에 접속하도록 허용합니다.
+#
+# - 차단 정책이 없는 클러스터에서는 필요 없습니다. `infra-agent check`가 데이터 소스에서
+#   [timeout]으로 실패하고 Kubernetes API만 정상이면 이 경우를 의심합니다.
+# - 네임스페이스 이름, Pod 라벨(app.kubernetes.io/name), 포트는 예시입니다. 실제 클러스터에 맞게
+#   바꾸세요:  kubectl -n <네임스페이스> get pods --show-labels
+# - 조회 포트만 엽니다(수집용 4317·4318 등은 열지 않음). 허용 대상은 infra-agent 네임스페이스뿐입니다.
+# - 네트워크 정책을 GitOps(Argo CD 등)로 관리한다면 직접 적용하지 말고 그 저장소에 추가하세요.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-infra-agent-to-prometheus
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: infra-agent
+      ports:
+        - {port: 9090, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-infra-agent-to-loki
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: infra-agent
+      ports:
+        - {port: 3100, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-infra-agent-to-tempo
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: infra-agent
+      ports:
+        - {port: 3200, protocol: TCP}

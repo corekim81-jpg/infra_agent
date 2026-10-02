@@ -1,0 +1,29 @@
+# 클러스터 내부 실행용 설정 (ConfigMap). 비밀값은 넣지 않습니다.
+# 데이터 소스 주소는 예시입니다. 실제 클러스터의 서비스 이름·네임스페이스·포트로 바꿔 적용하세요.
+#   kubectl -n <네임스페이스> get svc 로 Prometheus·Loki·Tempo 서비스 이름과 포트를 확인합니다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: infra-agent-config
+  namespace: infra-agent
+data:
+  config.yaml: |
+    profile: in-cluster
+    datasources:
+      prometheus:
+        enabled: true
+        url: http://prometheus.example.svc:9090
+      loki:
+        enabled: true
+        url: http://loki.example.svc:3100
+      tempo:
+        enabled: true
+        url: http://tempo.example.svc:3200
+      kubernetes:
+        enabled: true
+        auth: in_cluster        # Pod의 ServiceAccount(infra-agent-reader) 토큰 사용
+    catalog:
+      path: config/catalog/otel-demo.yaml
+    llm:
+      provider: fake            # 이미지에는 모델 SDK가 없습니다 (규칙·코드 판정만)
+      data_policy: none

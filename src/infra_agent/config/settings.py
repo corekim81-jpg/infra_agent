@@ -70,8 +70,16 @@ class HttpDatasourceConfig(_Strict):
         return self
 
 
+class KubernetesAuth(StrEnum):
+    KUBECONFIG = "kubeconfig"
+    """전용 읽기 계정의 토큰 kubeconfig 파일 (`kubeconfig_env`)."""
+    IN_CLUSTER = "in_cluster"
+    """Pod에 마운트된 ServiceAccount 토큰 (클러스터 내부 실행)."""
+
+
 class KubernetesConfig(_Strict):
     enabled: bool = False
+    auth: KubernetesAuth = KubernetesAuth.KUBECONFIG
     kubeconfig_env: str = "INFRA_AGENT_KUBECONFIG"
     """전용 읽기 계정 kubeconfig 파일 **경로**를 담은 환경 변수 이름.
 

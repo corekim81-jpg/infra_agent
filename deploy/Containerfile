@@ -1,0 +1,37 @@
+# infra_agent 컨테이너 이미지 (Rocky Linux 9, 읽기 전용 운영 분석 CLI)
+#
+# 빌드 (저장소 루트에서):
+#   docker build -f deploy/Containerfile -t infra-agent:dev .
+#   podman build -f deploy/Containerfile -t infra-agent:dev .
+#
+# - 이미지에는 코드와 조회 카탈로그·평가 세트만 넣습니다. 설정 파일, kubeconfig, 토큰, .env는 넣지
+#   않습니다(.dockerignore). 설정은 실행 시 /etc/infra-agent/config.yaml로 마운트합니다.
+# - 비루트 사용자(10001)로 실행하며, 쓰는 경로는 /opt/infra-agent/var 뿐입니다.
+# - 모델 SDK(".[llm]")는 넣지 않습니다. 이미지 안에서는 llm.provider: fake(모델 없음)로 실행합니다.
+FROM rockylinux:9-minimal AS build
+
+RUN microdnf install -y python3.11 python3.11-pip && microdnf clean all
+WORKDIR /src
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN python3.11 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir .
+
+FROM rockylinux:9-minimal
+
+RUN microdnf install -y python3.11 && microdnf clean all \
+    && mkdir -p /opt/infra-agent/var /etc/infra-agent \
+    && chown 10001:0 /opt/infra-agent/var
+COPY --from=build /opt/venv /opt/venv
+WORKDIR /opt/infra-agent
+# 설정의 catalog.path(config/catalog/...)와 평가 세트는 작업 디렉터리 기준 상대 경로입니다.
+COPY config/catalog ./config/catalog
+COPY config/eval ./config/eval
+
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    INFRA_AGENT_CONFIG=/etc/infra-agent/config.yaml
+USER 10001
+ENTRYPOINT ["infra-agent"]
+CMD ["check"]

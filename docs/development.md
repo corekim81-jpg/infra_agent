@@ -1,6 +1,6 @@
 # 개발 가이드
 
-> **상태: 8b단계 (#35) 구현, 개발 서버 live 확인 완료.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29), Kubernetes API 읽기 전용 연동(#35: 전용 읽기 계정 kubeconfig, 권한 점검, Pod 상태·Warning 이벤트, RBAC 매니페스트)이 있습니다.
+> **상태: 13a단계 (#39) 컨테이너·클러스터 내부 실행 구현, 개발 서버에서 이미지 빌드·클러스터 내부 실행 확인.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29), Kubernetes API 읽기 전용 연동(#35: 전용 읽기 계정 kubeconfig, 권한 점검, Pod 상태·Warning 이벤트, RBAC 매니페스트)이 있습니다.
 > Kubernetes API 연동은 개발 서버에서 live 확인했습니다(2026-10-02, 테스트용 Pod로 Pending 사유·Warning 이벤트 표시 확인). 구간 내 비정상 종료 사유 표시는 아직 확인하지 못했습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
@@ -145,7 +145,9 @@ infra_agent/
 | 11 | Network Agent | `hubble_*` 드롭·DNS 분석 | 가용 데이터 기준 답변, 부족 시 수집 설정 제안 | 7 | 완료 (#27, PR #28; 개발 서버 live 2건 통과 2026-09-30) |
 | 12 | 분야 간 교차 분석 | Service 이상 대상 추출, Network 집중 확인(서비스 이상 최고 시점 기준), Coordinator 교차 확인(연결·미연결·미확인 구분, 동시 발생 원인 후보) | "네트워크인지 DB인지" 질문에 분야별 연결 결과 답변 (가상 + live) | 8–11 | 완료 (#29, PR #30; 개발 서버 live 3건 통과 2026-10-01) |
 | 12b | 대표 질문 품질 평가 | 평가 세트(`config/eval/questions.yaml`), 결정적 평가 기준(`evaluation`), `eval` 명령, [evaluation.md](evaluation.md) | 대표 질문 7개 평가 기록 | 12 | 완료 (#31, PR #32; 개발 서버 평가 모델 사용·미사용 각 7/7 통과, 사람 검토 반영 2026-10-01) |
-| 13 | 배포·확장 | Containerfile(Rocky Linux 9), Kubernetes 배포·RBAC, MCP 경로, HTTP API | 클러스터 내부 읽기 전용 실행 확인 | 12 | 계획 |
+| 13a | 컨테이너·클러스터 내부 실행 | Containerfile(Rocky Linux 9), in-cluster 인증(ServiceAccount 토큰 재읽기), 설정 ConfigMap·연결 점검 Job·질문 Job 예시 | 클러스터 내부 읽기 전용 실행 확인 | 8b, 12 | 완료 (#39; 개발 서버에서 이미지 빌드, 클러스터 내부 연결 점검·질문 실행 확인 2026-10-02) |
+| 13b | HTTP API·상시 실행 | FastAPI 기반 HTTP API, Deployment·Service | 클러스터 내부에서 질문 요청·응답 | 13a | 계획 |
+| 13c | MCP 경로 | 데이터 접근 계층의 MCP 구현 | MCP로 같은 조회 수행 | 13a | 계획 |
 
 8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 개발 환경(OTel Demo)에서만 `full`로 결정되었습니다(2026-09-29). 운영 환경의 정책은 결정 전까지 `none`을 사용합니다.
 
@@ -175,4 +177,7 @@ infra_agent/
 | `kubernetes: 응답했지만 사용 불가 [not_read_only]` | 계정에 쓰기·Pod 실행·프록시·secrets 읽기 권한이 있거나 권한 목록을 확인하지 못함 | 전용 읽기 계정 사용. 이 상태에서는 질문 처리 때도 API를 조회하지 않음 |
 | `kubernetes: 연결 실패 [kubeconfig_error] … insecure-skip-tls-verify` | kubeconfig가 서버 인증서 검증을 끔 | `certificate-authority-data` 사용 (`make-reader-config.sh`가 넣어 줌). 개발 환경에서만 `allow_insecure_tls: true` |
 | `kubernetes: 연결 실패 [connect_error]` (TLS 오류 포함) | 터널 미실행, 주소 오류, 또는 서버 인증서에 접속 주소가 없음 | 터널·포트 확인, 인증서에 포함된 주소(`127.0.0.1`·`localhost` 등)로 접속 |
+| `kubernetes: 연결 실패 [missing_credential] 클러스터 내부 실행이 아닙니다` | `auth: in_cluster`를 클러스터 밖에서 사용 | 클러스터 밖에서는 `auth: kubeconfig`(기본값) |
+| `kubernetes: 연결 실패 [missing_credential] ServiceAccount 토큰을 읽지 못했습니다` | Pod에 토큰이 마운트되지 않음 | Pod의 `serviceAccountName`, `automountServiceAccountToken: true` 확인 |
+| 클러스터 내부 실행에서 Prometheus·Loki·Tempo가 `[timeout]`, kubernetes만 정상 | 데이터 소스 네임스페이스의 NetworkPolicy가 infra-agent 네임스페이스의 접속을 차단 (기본 차단 정책) | `kubectl get networkpolicy -A`로 확인 후 조회 포트 허용 정책 추가 (`deploy/k8s/networkpolicy-example.yaml`) |
 | Prometheus·Loki·Tempo `연결 실패 [connect_error]` + SSH 터널 힌트 | 터널 미실행, WSL·Docker에서 실행 | environment.md 1.1절 |
