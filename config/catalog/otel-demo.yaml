@@ -310,7 +310,8 @@ items:
     unit: count
     query: >-
       sum by (reason, source_namespace, source_workload, destination_namespace, destination_workload)
-      (increase(hubble_drop_total{{{selector}}}[{range}]))
+      ((hubble_drop_total{{{selector}}} unless hubble_drop_total{{{selector}}} offset {range})
+      or increase(hubble_drop_total{{{selector}}}[{range}]))
     requires_metrics: [hubble_drop_total]
     target_labels: &hubble_targets
       namespace: destination_namespace
@@ -321,6 +322,9 @@ items:
       - namespace 대상은 도착(destination) 기준으로 필터링함. 출발 기준이 필요하면 source_namespace로 별도 조회
       - k8s_namespace_name·k8s_pod_name 라벨은 Hubble(cilium) 수집 Pod를 가리키므로 대상 필터에 쓰지 않음
       - increase()의 추정값임. 출발·도착 워크로드가 빈 값이면 클러스터 밖이나 식별되지 않은 대상임
+      - Hubble 드롭 카운터는 첫 드롭 때 시계열이 생기는데 increase()는 첫 샘플을 세지 않음. 그래서 구간
+        시작 시점에 없던 시계열은 현재 누적 값을 구간 내 발생 수로 셈(#42). 구간 시작 무렵 수집이
+        끊겼던 시계열은 구간 이전 발생분까지 포함될 수 있음
   network.flows_by_verdict:
     agent: network
     source: prometheus
@@ -394,7 +398,10 @@ items:
     source: prometheus
     description: 구간 내 Hubble 이벤트 유실 수 (관측 누락 가능성)
     unit: count
-    query: 'sum by (k8s_node_name, source) (increase(hubble_lost_events_total{{{selector}}}[{range}]))'
+    query: >-
+      sum by (k8s_node_name, source)
+      ((hubble_lost_events_total{{{selector}}} unless hubble_lost_events_total{{{selector}}} offset {range})
+      or increase(hubble_lost_events_total{{{selector}}}[{range}]))
     requires_metrics: [hubble_lost_events_total]
     target_labels: {node: k8s_node_name}
     evidence: {status: discovered, checked_at: 2026-09-29}

@@ -509,6 +509,8 @@ async def test_counts_ratios_and_context() -> None:
     assert any("DNS 응답 코드" in x for x in result.scope_notes)
     queried = [q for q, _ in fake.queries]
     assert any("increase(hubble_drop_total{}[1800s])" in q for q in queried)
+    # 구간 안에서 처음 나타난 드롭 시계열은 increase()가 0으로 세므로 누적 값으로 보완 (#42)
+    assert any("hubble_drop_total{} unless hubble_drop_total{} offset 1800s" in q for q in queried)
     assert any("rate(hubble_flows_processed_total{}[5m])" in q for q in queried)
 
 
