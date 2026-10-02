@@ -215,6 +215,12 @@ infra-agent ask --config config/local.yaml "직전 30분과 비교해서 현재 
 # 대표 질문 7개 품질 평가 → 질문×기준 표 출력, 상세 보고서는 var/eval/ (실제 데이터 포함, 커밋 금지)
 infra-agent eval --config config/local.yaml [--no-llm] [--only q3]
 
+# HTTP API (선택): python -m pip install -e ".[api]" 후, 토큰을 환경 변수로 지정해 실행
+#   Linux: export INFRA_AGENT_API_TOKEN=...   /  PowerShell: $env:INFRA_AGENT_API_TOKEN = "..."
+infra-agent serve --config config/local.yaml          # 기본 http://127.0.0.1:8080
+#   POST /v1/ask  {"question": "...", "range": "1h", "namespace": "..."}  (Authorization: Bearer <토큰>)
+#   GET  /v1/check, /healthz, /readyz
+
 # 테스트
 python -m pytest -m "not live"
 ```
@@ -225,9 +231,10 @@ Kubernetes API 연동(선택)은 전용 읽기 계정이 필요합니다. 클러
 
 컨테이너 이미지(Rocky Linux 9)와 클러스터 내부 실행용 매니페스트는 `deploy/Containerfile`, `deploy/k8s/`에 있습니다. 클러스터 내부에서는 Pod의 전용 읽기 ServiceAccount 토큰으로 Kubernetes API에 접속하며(`datasources.kubernetes.auth: in_cluster`), 모델 없이 실행합니다. 데이터 소스 네임스페이스가 들어오는 트래픽을 기본 차단하면 조회 포트 허용 정책이 필요합니다(`deploy/k8s/networkpolicy-example.yaml`). 절차는 [docs/environment.md](docs/environment.md) 1.2절을 봅니다.
 
+HTTP API는 질문을 받아 CLI `ask`와 같은 답변을 JSON과 텍스트로 돌려줍니다. 토큰 없이는 질문을 받지 않고, 동시 처리 수와 질문 길이를 제한합니다. 클러스터 내부 상시 실행용 매니페스트는 `deploy/k8s/deployment.yaml`입니다(클러스터 내부 Service만, 외부 노출 없음). 클러스터 내부 상시 실행은 아직 실제 환경에서 확인하지 못했습니다.
+
 이후 단계에서 다음 항목을 추가합니다.
 
-- HTTP API와 상시 실행 배포(Deployment)
 - MCP 경로
 
 ## 테스트 및 품질 평가

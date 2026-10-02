@@ -49,12 +49,26 @@
 | [`deploy/k8s/config.yaml`](../deploy/k8s/config.yaml) | 설정 ConfigMap 예시 (`profile: in-cluster`, `kubernetes.auth: in_cluster`, 모델 없음). 데이터 소스 주소는 예시이므로 실제 서비스 주소로 바꿉니다 |
 | [`deploy/k8s/job-check.yaml`](../deploy/k8s/job-check.yaml) | 연결 점검 Job (`infra-agent check`) |
 | [`deploy/k8s/job-ask.yaml`](../deploy/k8s/job-ask.yaml) | 질문 한 건을 실행하는 Job 예시 (HTTP API 제공 전의 임시 실행 방법) |
+| [`deploy/k8s/deployment.yaml`](../deploy/k8s/deployment.yaml) | HTTP API 상시 실행 Deployment와 클러스터 내부 Service (#45). API 토큰은 Secret `infra-agent-api`에서 받음 |
 | [`deploy/k8s/networkpolicy-example.yaml`](../deploy/k8s/networkpolicy-example.yaml) | 데이터 소스 네임스페이스가 들어오는 트래픽을 기본 차단할 때, infra-agent 네임스페이스에서 조회 포트로의 접속을 허용하는 NetworkPolicy 예시 |
 
 - **Kubernetes API 인증:** `datasources.kubernetes.auth: in_cluster`이면 Pod에 마운트된 ServiceAccount 토큰·CA(`/var/run/secrets/kubernetes.io/serviceaccount`)와 `KUBERNETES_SERVICE_HOST`·`PORT`로 접속합니다. 토큰은 주기적으로 교체되므로 요청마다 파일 변경을 확인해 다시 읽습니다. kubeconfig 파일은 쓰지 않습니다.
 - **계정:** Job은 3.5절의 전용 읽기 계정(`infra-agent-reader`)으로 실행합니다. 그 ServiceAccount는 토큰 자동 마운트가 꺼져 있고 Job의 Pod에서만 켭니다. 권한 점검(쓰기·실행·프록시·secrets 권한이 있으면 조회하지 않음)은 클러스터 밖 실행과 같습니다.
 - **Pod 보안 설정:** 비루트, 권한 상승 금지, 읽기 전용 루트 파일시스템, capability 전부 제거. 쓰는 경로는 `var/`(emptyDir)뿐입니다.
 - **모델:** 이미지에는 모델 SDK를 넣지 않았습니다. 클러스터 내부 실행은 모델 없이(`llm.provider: fake`) 규칙·코드 판정만 합니다. 운영 데이터의 외부 모델 전송 범위가 미확정이기 때문입니다(architecture.md 11절).
+
+**HTTP API (#45)** — `infra-agent serve`, 선택 의존성 `[api]`(FastAPI, uvicorn). 이미지에는 포함되어 있습니다.
+
+| 엔드포인트 | 인증 | 내용 |
+| --- | --- | --- |
+| `POST /v1/ask` | Bearer 토큰 | 본문 `question`(필수), `range`, `namespace`, `node`, `pod`, `use_llm`, `include_text`. 응답은 CLI `ask --json`과 같은 구조에 `status`(ok·partial·failed)와 `text`(사람이 읽는 답변)를 더한 것 |
+| `GET /v1/check` | Bearer 토큰 | 데이터 소스 연결 상태 (CLI `check`와 같음) |
+| `GET /healthz`, `GET /readyz` | 없음 | 프로세스 상태만 (내부 정보 없음). 데이터 소스 일부가 내려가도 준비 상태는 유지 |
+
+- 토큰은 환경 변수(`api.token_env`, 기본 `INFRA_AGENT_API_TOKEN`)로만 받습니다. 클러스터에서는 Secret으로 주입하며 값은 매니페스트에 넣지 않습니다.
+- 제한: 동시 처리 `api.max_concurrent_requests`(기본 2, 넘으면 429), 질문 길이 `api.max_question_chars`(기본 2000자, 넘으면 413), 분석 제한 시간 초과 시 504. 내부 오류는 `error_id`만 돌려주고 내용은 로그(마스킹)에 남깁니다.
+- 문서·스키마 엔드포인트(`/docs`, `/openapi.json`)는 열지 않습니다. 외부 노출(Ingress)과 TLS는 포함하지 않으므로, 클러스터 밖에서는 `kubectl port-forward`로 확인합니다.
+- **확인 범위:** 단위 테스트와 로컬 프로세스 실행(인증 거부, 질문 응답)까지 확인했습니다. 클러스터 내부 상시 실행은 아직 확인하지 못했습니다.
 
 **실행 절차 (사용자 작업, k3d 기준)**
 
@@ -116,6 +130,7 @@ kubectl -n infra-agent logs job/infra-agent-check
 | `token_env`로 지정한 변수 (예: `INFRA_AGENT_PROMETHEUS_TOKEN`) | 데이터 소스 인증이 필요해질 경우의 토큰 | 예 | 구현됨 (Bearer 헤더, 값은 마스킹 등록) |
 | `INFRA_AGENT_KUBECONFIG` (`kubeconfig_env` 기본값) | 전용 읽기 계정 kubeconfig 파일 경로 (ServiceAccount 토큰 형식만 허용) | 파일 내용은 비밀 | 구현됨 (#35, 토큰은 마스킹 등록) |
 | `ANTHROPIC_API_KEY` | Claude Agent SDK 인증 (SDK가 직접 읽음, 프로그램은 값을 읽거나 기록하지 않음). Claude Code 로그인으로 대체 가능 | 예 | 구현됨 (#15) |
+| `INFRA_AGENT_API_TOKEN` (`api.token_env` 기본값) | HTTP API 인증 토큰. 없으면 `serve`가 시작하지 않음(`api.allow_anonymous: true` 제외) | 예 | 구현됨 (#45, 마스킹 등록) |
 | `INFRA_AGENT_LIVE_TESTS` | `1`일 때만 `live` 테스트 실행 | 아니오 | 구현됨 (`tests/conftest.py`) |
 
 ## 3. 데이터 소스별 사용 범위 (탐색 결과)
@@ -156,7 +171,8 @@ kubectl -n infra-agent logs job/infra-agent-check
 - **`system_*` 지표:** `k8s_pod_name`·`telemetry_auto_version` 라벨이 붙어 있어 Pod 안의 자동 계측(런타임) 값으로 보입니다. **물리 서버 전체 값으로 사용하지 않으며** 카탈로그에서 제외했습니다. 물리 서버 성능 분석이 필요하면 호스트 수준 수집을 별도로 구성해야 합니다.
 - **Hubble 지표의 `k8s_namespace_name`·`k8s_pod_name`:** 트래픽 대상이 아니라 수집 주체(cilium) Pod를 가리킵니다. 대상 필터는 `source_*`/`destination_*` 라벨을 씁니다.
 - **DNS 오류율:** Hubble DNS 지표에 응답 코드(rcode) 라벨이 없어 판단할 수 없습니다.
-- **처음 나타난 드롭 시계열(#42, 2026-10-02):** 새 네임스페이스의 Pod가 정책으로 차단됐을 때 `hubble_drop_total`에 새 시계열(사유 POLICY_DENIED)이 누적 값과 함께 생겼지만, 같은 구간의 `increase()`는 0이었습니다(live 조회로 확인). Network Agent가 "드롭 발생 없음"으로 답한 원인이며, 카탈로그의 Hubble 드롭·이벤트 유실 조회식을 구간 시작 시점에 없던 시계열의 누적 값을 포함하도록 바꿨습니다. 현재 5분 흐름 판정 비율(`rate()`)에는 같은 보완을 적용하지 않았습니다. 수정 후 개발 서버 재확인은 아직입니다.
+- **#42 수정 후 재확인(2026-10-02, 사용자 실행):** 같은 질문(도착 네임스페이스 대상, 6시간 구간)에서 새 네임스페이스 출발의 POLICY_DENIED 드롭이 경고로 표시됐습니다. 같은 방식으로 놓치고 있던 다른 출발지의 정책 거부 드롭 1건도 함께 드러났습니다.
+- **처음 나타난 드롭 시계열(#42, 2026-10-02):** 새 네임스페이스의 Pod가 정책으로 차단됐을 때 `hubble_drop_total`에 새 시계열(사유 POLICY_DENIED)이 누적 값과 함께 생겼지만, 같은 구간의 `increase()`는 0이었습니다(live 조회로 확인). Network Agent가 "드롭 발생 없음"으로 답한 원인이며, 카탈로그의 Hubble 드롭·이벤트 유실 조회식을 구간 시작 시점에 없던 시계열의 누적 값을 포함하도록 바꿨습니다. 현재 5분 흐름 판정 비율(`rate()`)에는 같은 보완을 적용하지 않았습니다. 
 - **DNS 질의량:** 개발 환경 live 확인(2026-09-30) 결과 `hubble_dns_queries_total`의 5분 증가율이 0이었습니다. Hubble DNS 지표는 DNS 가시성(L7 DNS 프록시 정책)이 적용된 흐름만 집계하므로 실제 DNS 질의량으로 보지 않습니다. 필요하면 CiliumNetworkPolicy의 DNS 규칙(`toPorts.rules.dns`)으로 가시성을 켜야 합니다.
 - **스트리밍 호출 지연:** 개발 환경에서는 flagd를 호출받는 서비스 간 호출 일부의 지연 p95가 히스토그램 상한(12.8초 이상)으로 꾸준히 나옵니다(2026-09-30~10-01 live). 기능 플래그 이벤트 스트림처럼 오래 열린 호출로 보이므로, `config/local.yaml`의 `analysis.streaming_services: [flagd]`로 지연 판정에서 뺄 수 있습니다(기본값은 비어 있음, #33).
 - **Hubble 드롭 사유:** 개발 환경에서는 `UNSUPPORTED_L3_PROTOCOL`(IPv4·IPv6가 아닌 L3 패킷) 드롭이 출발·도착 라벨 없이 30분에 수십 회 꾸준히 발생합니다. 일반적으로 장애가 아니므로 `analysis.benign_drop_reasons` 기본값으로 정보 표시합니다.

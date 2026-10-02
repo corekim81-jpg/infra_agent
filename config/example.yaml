@@ -51,6 +51,14 @@ execution:
   max_retries: 2
   default_time_range: 30m
 
+api:                         # HTTP API (infra-agent serve, 선택 의존성 [api])
+  host: 127.0.0.1            # 컨테이너에서는 0.0.0.0
+  port: 8080
+  token_env: INFRA_AGENT_API_TOKEN   # 인증 토큰을 담은 "환경 변수 이름" (값은 설정에 넣지 않음)
+  allow_anonymous: false     # true면 토큰 없이 질문을 받음 (로컬 개발 전용)
+  max_concurrent_requests: 2 # 넘으면 429로 거절
+  max_question_chars: 2000
+
 analysis:                    # 판정 기준 (제안 기본값)
   utilization_warning: 0.8   # 사용량/할당 가능량(또는 limit) 경고
   utilization_critical: 0.9

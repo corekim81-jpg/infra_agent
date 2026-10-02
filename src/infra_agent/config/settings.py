@@ -226,6 +226,27 @@ class AnalysisConfig(_Strict):
         return self
 
 
+class ApiConfig(_Strict):
+    """HTTP API(`infra-agent serve`) 설정. 토큰 값은 설정에 넣지 않고 환경 변수로만 받습니다."""
+
+    host: str = "127.0.0.1"
+    """수신 주소. 컨테이너에서는 0.0.0.0으로 지정합니다."""
+    port: int = Field(default=8080, ge=1, le=65535)
+    token_env: str = "INFRA_AGENT_API_TOKEN"
+    """API 인증 토큰을 담은 환경 변수 이름 (토큰 값이 아님)."""
+    allow_anonymous: bool = False
+    """토큰 없이 질문을 받을지. 기본은 거부이며, 로컬 개발에서만 켭니다."""
+    max_concurrent_requests: int = Field(default=2, ge=1, le=32)
+    """동시에 처리할 질문 수. 넘으면 429로 거절합니다(데이터 소스 보호)."""
+    max_question_chars: int = Field(default=2000, ge=10, le=20000)
+
+    @field_validator("token_env")
+    @classmethod
+    def _check_env(cls, value: str) -> str:
+        _validate_env_name(value)
+        return value
+
+
 class Settings(_Strict):
     profile: Profile = Profile.CI
     datasources: DatasourcesConfig = DatasourcesConfig()
@@ -233,6 +254,7 @@ class Settings(_Strict):
     llm: LLMConfig = LLMConfig()
     execution: ExecutionConfig = ExecutionConfig()
     analysis: AnalysisConfig = AnalysisConfig()
+    api: ApiConfig = ApiConfig()
 
     @model_validator(mode="after")
     def _ci_profile_guard(self) -> Self:
