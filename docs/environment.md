@@ -42,6 +42,7 @@
 | [`deploy/k8s/config.yaml`](../deploy/k8s/config.yaml) | 설정 ConfigMap 예시 (`profile: in-cluster`, `kubernetes.auth: in_cluster`, 모델 없음). 데이터 소스 주소는 예시이므로 실제 서비스 주소로 바꿉니다 |
 | [`deploy/k8s/job-check.yaml`](../deploy/k8s/job-check.yaml) | 연결 점검 Job (`infra-agent check`) |
 | [`deploy/k8s/job-ask.yaml`](../deploy/k8s/job-ask.yaml) | 질문 한 건을 실행하는 Job 예시 (HTTP API 제공 전의 임시 실행 방법) |
+| [`deploy/k8s/networkpolicy-example.yaml`](../deploy/k8s/networkpolicy-example.yaml) | 데이터 소스 네임스페이스가 들어오는 트래픽을 기본 차단할 때, infra-agent 네임스페이스에서 조회 포트로의 접속을 허용하는 NetworkPolicy 예시 |
 
 - **Kubernetes API 인증:** `datasources.kubernetes.auth: in_cluster`이면 Pod에 마운트된 ServiceAccount 토큰·CA(`/var/run/secrets/kubernetes.io/serviceaccount`)와 `KUBERNETES_SERVICE_HOST`·`PORT`로 접속합니다. 토큰은 주기적으로 교체되므로 요청마다 파일 변경을 확인해 다시 읽습니다. kubeconfig 파일은 쓰지 않습니다.
 - **계정:** Job은 3.5절의 전용 읽기 계정(`infra-agent-reader`)으로 실행합니다. 그 ServiceAccount는 토큰 자동 마운트가 꺼져 있고 Job의 Pod에서만 켭니다. 권한 점검(쓰기·실행·프록시·secrets 권한이 있으면 조회하지 않음)은 클러스터 밖 실행과 같습니다.

@@ -179,4 +179,5 @@ infra_agent/
 | `kubernetes: 연결 실패 [connect_error]` (TLS 오류 포함) | 터널 미실행, 주소 오류, 또는 서버 인증서에 접속 주소가 없음 | 터널·포트 확인, 인증서에 포함된 주소(`127.0.0.1`·`localhost` 등)로 접속 |
 | `kubernetes: 연결 실패 [missing_credential] 클러스터 내부 실행이 아닙니다` | `auth: in_cluster`를 클러스터 밖에서 사용 | 클러스터 밖에서는 `auth: kubeconfig`(기본값) |
 | `kubernetes: 연결 실패 [missing_credential] ServiceAccount 토큰을 읽지 못했습니다` | Pod에 토큰이 마운트되지 않음 | Pod의 `serviceAccountName`, `automountServiceAccountToken: true` 확인 |
+| 클러스터 내부 실행에서 Prometheus·Loki·Tempo가 `[timeout]`, kubernetes만 정상 | 데이터 소스 네임스페이스의 NetworkPolicy가 infra-agent 네임스페이스의 접속을 차단 (기본 차단 정책) | `kubectl get networkpolicy -A`로 확인 후 조회 포트 허용 정책 추가 (`deploy/k8s/networkpolicy-example.yaml`) |
 | Prometheus·Loki·Tempo `연결 실패 [connect_error]` + SSH 터널 힌트 | 터널 미실행, WSL·Docker에서 실행 | environment.md 1.1절 |

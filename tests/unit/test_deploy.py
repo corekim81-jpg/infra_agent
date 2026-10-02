@@ -56,3 +56,18 @@ def test_containerfile_and_ignore_file() -> None:
     ignored = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     for entry in (".env", "config/local.yaml", "*.kubeconfig", "var", ".git"):
         assert entry in ignored
+
+
+def test_network_policy_example_opens_query_ports_only() -> None:
+    text = (ROOT / "deploy/k8s/networkpolicy-example.yaml").read_text(encoding="utf-8")
+    docs = [d for d in yaml.safe_load_all(text) if d]
+    ports = set()
+    for doc in docs:
+        assert doc["kind"] == "NetworkPolicy" and doc["spec"]["policyTypes"] == ["Ingress"]
+        (rule,) = doc["spec"]["ingress"]
+        (source,) = rule["from"]
+        assert source["namespaceSelector"]["matchLabels"] == {
+            "kubernetes.io/metadata.name": "infra-agent"
+        }
+        ports |= {p["port"] for p in rule["ports"]}
+    assert ports == {9090, 3100, 3200}
