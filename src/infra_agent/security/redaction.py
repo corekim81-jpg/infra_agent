@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import threading
+from typing import Any
 
 MASK = "***"
 
@@ -74,3 +75,18 @@ default_redactor = Redactor()
 def redact(text: str) -> str:
     """기본 Redactor로 문자열을 마스킹합니다."""
     return default_redactor.redact(text)
+
+
+def redact_values(value: Any) -> Any:
+    """JSON으로 내보낼 구조의 문자열 값마다 마스킹합니다.
+
+    직렬화한 뒤 전체를 마스킹하면 `token=***\"`처럼 이스케이프가 지워져 JSON이 깨질 수 있으므로,
+    직렬화 전에 값 단위로 마스킹합니다.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: redact_values(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [redact_values(v) for v in value]
+    return value

@@ -7,6 +7,7 @@
 # - 이미지에는 코드와 조회 카탈로그·평가 세트만 넣습니다. 설정 파일, kubeconfig, 토큰, .env는 넣지
 #   않습니다(.dockerignore). 설정은 실행 시 /etc/infra-agent/config.yaml로 마운트합니다.
 # - 비루트 사용자(10001)로 실행하며, 쓰는 경로는 /opt/infra-agent/var 뿐입니다.
+# - HTTP API 의존성(".[api]")을 포함합니다. `infra-agent serve`로 API를 실행합니다.
 # - 모델 SDK(".[llm]")는 넣지 않습니다. 이미지 안에서는 llm.provider: fake(모델 없음)로 실행합니다.
 FROM rockylinux:9-minimal AS build
 
@@ -16,7 +17,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN python3.11 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir .
+    && /opt/venv/bin/pip install --no-cache-dir ".[api]"
 
 FROM rockylinux:9-minimal
 

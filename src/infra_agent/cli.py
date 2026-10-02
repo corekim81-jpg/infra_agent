@@ -15,12 +15,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from infra_agent import __version__
+from infra_agent.answer.payload import answer_payload
 from infra_agent.answer.render import render_text
 from infra_agent.catalog import CatalogError, load_catalog
 from infra_agent.catalog.check import CheckStatus, ItemCheck, check_catalog
@@ -41,7 +43,7 @@ from infra_agent.evaluation import (
 from infra_agent.evaluation import write_report as write_eval_report
 from infra_agent.orchestration.runner import answer_question
 from infra_agent.schemas import AgentStatus, TargetKind
-from infra_agent.security import configure_logging, redact
+from infra_agent.security import configure_logging, redact, redact_values
 from infra_agent.timeutil import parse_duration, utc_now
 
 EXIT_OK = 0
@@ -139,6 +141,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ev.add_argument(
         "--no-llm", action="store_true", help="모델을 호출하지 않고 규칙·코드 판정만 사용"
     )
+    serve = sub.add_parser("serve", help="HTTP API를 실행합니다 (선택 의존성 [api] 필요)")
+    _add_config_arg(serve)
+    serve.add_argument("--host", default=None, help="수신 주소 (기본: 설정 api.host)")
+    serve.add_argument("--port", type=int, default=None, help="수신 포트 (기본: 설정 api.port)")
     return parser
 
 
@@ -333,36 +339,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         )
     )
     if args.json:
-        payload = {
-            "request_id": bundle.context.request_id,
-            "intent": bundle.context.intent.value,
-            "assumptions": list(bundle.interpretation.assumptions),
-            "interpretation_method": bundle.interpretation.method,
-            "interpretation_note": bundle.interpretation.method_note,
-            "llm": {
-                "provider": bundle.llm_name,
-                "calls": bundle.llm_calls,
-                "data_policy": bundle.data_policy,
-            },
-            "answer": bundle.answer.model_dump(mode="json"),
-            "execution": [
-                {
-                    "task_id": r.task_id,
-                    "agent": r.agent,
-                    "depends_on": list(r.depends_on),
-                    "status": r.status.value,
-                    "elapsed_ms": r.elapsed_ms,
-                    "reason": r.reason,
-                }
-                for r in bundle.runs
-            ],
-            "rejected_hypotheses": [
-                {"agent": r.agent.value, **x.model_dump(mode="json")}
-                for r in bundle.results
-                for x in r.rejected_hypotheses
-            ],
-        }
-        print(redact(json.dumps(payload, ensure_ascii=False, indent=2)))
+        payload = answer_payload(bundle)
+        print(json.dumps(redact_values(payload), ensure_ascii=False, indent=2))
     else:
         print(redact(render_text(bundle, show_queries=args.show_queries)))
     failed = bundle.results and all(r.status is AgentStatus.FAILED for r in bundle.results)
@@ -449,6 +427,38 @@ def _all_unavailable(results: Sequence[QuestionResult]) -> bool:
     return bool(results) and all(down(r) for r in results)
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """HTTP API를 실행합니다. FastAPI·uvicorn이 없으면 설치 방법을 알려 줍니다."""
+    settings = _load(args.config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    if not settings.catalog.path:
+        print("카탈로그 경로(catalog.path)가 설정되지 않았습니다.", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    try:
+        import uvicorn
+
+        from infra_agent.api.app import ApiConfigError, create_app
+    except ImportError:
+        print(
+            'HTTP API 의존성이 없습니다. python -m pip install -e ".[api]" 로 설치하세요.',
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG_ERROR
+    try:
+        app = create_app(settings, load_catalog(settings.catalog.path))
+    except (ApiConfigError, CatalogError) as exc:
+        print(redact(str(exc)), file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    configure_logging("INFO")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # 조회마다 남는 요청 로그는 줄임
+    host = args.host or settings.api.host
+    port = args.port or settings.api.port
+    # 접근 로그에는 경로·상태 코드만 남습니다(요청 본문·Authorization 헤더는 남기지 않음).
+    uvicorn.run(app, host=host, port=port, log_config=None)
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     configure_logging("WARNING")
@@ -464,6 +474,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_ask(args)
     if args.command == "eval":
         return _cmd_eval(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 
