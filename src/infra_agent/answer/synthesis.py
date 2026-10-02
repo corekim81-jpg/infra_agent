@@ -207,6 +207,8 @@ def synthesize(
         next_checks = [x for x in next_checks if x != LIMIT_NEAR_CHECK]
     cross = cross_check(results, stale_after_seconds)
     limitations.extend(x for x in cross.limitations if x not in limitations)
+    scope_notes = list(dict.fromkeys(x for r in results for x in r.scope_notes))
+    scope_notes.extend(x for x in cross.scope_notes if x not in scope_notes)
     summary = _summary(facts, results, interp)
     has_issues = bool(cross.lines) and not cross.lines[0].startswith("서비스 이상 대상: 없음")
     if cross.summary and (has_issues or asks_cause(question)):
@@ -219,6 +221,7 @@ def synthesize(
         hypotheses=tuple(hypotheses),
         evidence=tuple(evidence),
         limitations=tuple(limitations),
+        scope_notes=tuple(scope_notes),
         unverified_areas=tuple(unverified),
         next_checks=tuple(next_checks),
         cross_checks=cross.lines,

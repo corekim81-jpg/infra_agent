@@ -271,7 +271,7 @@ class KubernetesAgent:
         """선행 작업이 없는 독립 분석이므로 `upstream`은 사용하지 않습니다."""
         targets = context_targets(ctx)
         col = Collector()
-        col.limit(API_SCOPE_NOTE if self._api is not None else SCOPE_NOTE)
+        col.note(API_SCOPE_NOTE if self._api is not None else SCOPE_NOTE)
         if self._api_note:
             col.limit(self._api_note)
         found: dict[str, dict[str, float]] = {}
@@ -307,7 +307,7 @@ class KubernetesAgent:
             target = k8s_entity(labels)
             problems.setdefault(target.name, value)
         if check.key == "k8s.pod_phase":
-            col.limit(PHASE_NOTE)
+            col.note(PHASE_NOTE)
         shown = rows[: self._cfg.top_n]
         for labels, value in shown:
             target = k8s_entity(labels)
@@ -627,7 +627,7 @@ class KubernetesAgent:
                 _api_fact(f"Warning 이벤트 ({window}, Kubernetes API): 없음", (), result)
             )
             return
-        col.limit(EVENT_COUNT_NOTE)
+        col.note(EVENT_COUNT_NOTE)
         ordered = sorted(grouped.items(), key=lambda kv: (-kv[1]["count"], kv[0]))
         for (ns, kind, name, reason), entry in ordered[: self._cfg.top_n]:
             seen = entry["last_seen"]

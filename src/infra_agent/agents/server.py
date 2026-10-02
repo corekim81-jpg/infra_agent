@@ -136,7 +136,7 @@ class ServerAgent:
         """선행 작업이 없는 독립 분석이므로 `upstream`은 사용하지 않습니다."""
         targets = context_targets(ctx)
         col = Collector()
-        col.limit(SCOPE_NOTE)
+        col.note(SCOPE_NOTE)
         if ctx.intent in (Intent.COMPARE, Intent.ANOMALY) and ctx.baseline_range is not None:
             for inc in INCREASE_CHECKS:
                 await self._increase(inc, ctx, targets, col)

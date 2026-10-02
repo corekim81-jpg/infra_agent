@@ -168,6 +168,11 @@ def render_text(bundle: AnswerBundle, *, show_queries: bool = False) -> str:
         lines.append("")
         lines.append("[추가 확인]")
         lines.extend(f"- {x}" for x in answer.next_checks)
+    if answer.scope_notes:
+        # 조회 결과와 관계없이 같은 안내이므로 이번 조회의 한계와 섞지 않고 끝에 둡니다.
+        lines.append("")
+        lines.append("[분석 범위·해석 기준]")
+        lines.extend(f"- {x}" for x in answer.scope_notes)
     rejected = [(r.agent.value, x) for r in bundle.results for x in r.rejected_hypotheses]
     if show_queries and rejected:
         lines.append("")

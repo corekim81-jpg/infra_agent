@@ -119,7 +119,7 @@ async def test_problems_and_no_issue_facts() -> None:
     # 최신 데이터의 빈 조건 조회 → "해당 없음" (정보)
     assert "Ready 상태가 아닌 노드 (현재): 해당 대상 없음" in by_text
     assert by_text["준비(ready)되지 않은 컨테이너 (현재): 해당 대상 없음"].severity is Severity.INFO
-    assert any("Pod phase 값은" in x for x in result.limitations)
+    assert any("Pod phase 값은" in x for x in result.scope_notes)
     assert any(x.startswith("OOM 이벤트와 재시작이 같은 구간에") for x in result.next_checks)
     # 재시작·OOM은 분석 구간 전체(30분)의 증가량으로 조회
     queried = [q for q, _ in fake.queries]

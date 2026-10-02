@@ -285,7 +285,7 @@ def test_checks_catch_missing_data_reported_as_normal(
         task_id=server.task_id,
         agent=server.agent,
         status=AgentStatus.SUCCESS,
-        limitations=(SCOPE_NOTE,),
+        scope_notes=(SCOPE_NOTE,),
     )
     d3 = _check(q, replace(bundle, results=(silent,)), "disclosure")
     assert d3.status is CheckStatus.FAIL and "데이터 부족 사유가 없음" in d3.detail

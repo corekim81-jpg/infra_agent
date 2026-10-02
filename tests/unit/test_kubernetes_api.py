@@ -455,7 +455,7 @@ async def test_agent_adds_api_details(tmp_path: Path) -> None:
     assert len(backoff) == 1 and backoff[0].endswith("Back-off again")
     assert facts[backoff[0]] is Severity.INFO
     assert any("Node/k3d-syn-0 — NodeNotReady" in s for s in facts)
-    assert API_SCOPE_NOTE in result.limitations and SCOPE_NOTE not in result.limitations
+    assert API_SCOPE_NOTE in result.scope_notes and SCOPE_NOTE not in result.scope_notes
     assert {e.evidence_id for e in result.evidence} >= {
         "k8s_api.permissions@current",
         "k8s_api.pods@current",
@@ -650,7 +650,7 @@ async def test_answer_question_without_kubeconfig(
         use_llm=False,
     )
     limits = bundle.results[0].limitations
-    assert SCOPE_NOTE in limits
+    assert SCOPE_NOTE in bundle.results[0].scope_notes
     assert any(x.startswith("Kubernetes API를 사용하지 못함: kubeconfig 경로") for x in limits)
 
 

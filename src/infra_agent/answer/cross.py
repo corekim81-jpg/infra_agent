@@ -84,6 +84,7 @@ class CrossCheck:
     lines: tuple[str, ...] = ()
     correlations: tuple[Finding, ...] = ()
     limitations: tuple[str, ...] = ()
+    scope_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -219,7 +220,7 @@ def cross_check(
         )
     calls = service_db_calls(results, stale_after_seconds)
     lines: list[str] = []
-    limitations = [CROSS_NOTE]
+    limitations: list[str] = []
     if issues:
         lines.append("서비스 이상 대상: " + ", ".join(i.label for i in issues.values()))
     else:
@@ -325,4 +326,5 @@ def cross_check(
         lines=tuple(lines),
         correlations=tuple(correlations),
         limitations=tuple(limitations),
+        scope_notes=(CROSS_NOTE,),
     )

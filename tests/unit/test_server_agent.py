@@ -119,7 +119,8 @@ async def test_status_thresholds() -> None:
     # 빈 결과는 "정상"이 아니라 한계로 표시
     assert any("CPU limit이 있는 컨테이너 결과가 없어" in x for x in result.limitations)
     assert any("스로틀링 결과가 없어" in x for x in result.limitations)
-    assert any("물리 서버" in x for x in result.limitations)
+    assert any("물리 서버" in x for x in result.scope_notes)
+    assert not any("물리 서버" in x for x in result.limitations)
     # 근거 ID는 모두 실제 evidence에 존재 (스키마가 강제)
     assert all(f.evidence_ids for f in result.findings)
     assert (
@@ -216,6 +217,10 @@ async def test_answer_question_end_to_end(monkeypatch: pytest.MonkeyPatch) -> No
     text = render_text(bundle, show_queries=True)
     for section in ("[질문 해석]", "[요약]", "[이상 징후]", "[확인된 사실]", "[근거]", "[한계]"):
         assert section in text
+    # 고정된 범위 안내는 [한계]가 아니라 답변 끝의 별도 구역에 표시
+    limits, _, scope = text.partition("[분석 범위·해석 기준]")
+    assert "물리 서버" in scope and "물리 서버" not in limits.split("[한계]")[1]
+    assert bundle.answer.scope_notes and "scope_notes" in bundle.answer.model_dump()
     assert "기준을 넘는 이상 징후 2건(심각 1건, 경고 1건)" in text
     assert "k8s_node_cpu_usage" in text  # --show-queries
     assert "모델 호출 없음" in text

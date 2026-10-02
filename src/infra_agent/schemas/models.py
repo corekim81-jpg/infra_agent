@@ -261,6 +261,9 @@ class AgentResult(_Model):
     findings: tuple[Finding, ...] = ()
     evidence: tuple[ToolResult, ...] = ()
     limitations: tuple[str, ...] = ()
+    scope_notes: tuple[str, ...] = ()
+    """분석 범위·해석 기준 안내 (조회 결과와 관계없이 같은 문구). 이번 조회에서 확인하지 못한
+    내용은 `limitations`에 둡니다."""
     next_checks: tuple[str, ...] = ()
     errors: tuple[ErrorInfo, ...] = ()
     usage: Usage = Usage()
@@ -299,6 +302,9 @@ class FinalAnswer(_Model):
     hypotheses: tuple[Finding, ...] = ()
     evidence: tuple[EvidenceSummary, ...] = ()
     limitations: tuple[str, ...] = ()
+    scope_notes: tuple[str, ...] = ()
+    """분석 범위·해석 기준 안내 (조회 결과와 관계없이 같은 문구). 이번 조회에서 확인하지 못한
+    내용은 `limitations`에 둡니다."""
     unverified_areas: tuple[str, ...] = ()
     next_checks: tuple[str, ...] = ()
     cross_checks: tuple[str, ...] = ()

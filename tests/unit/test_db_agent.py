@@ -178,8 +178,8 @@ async def test_thresholds_counts_and_context() -> None:
     assert "PostgreSQL DB 크기(현재): otel 12.0MiB" in by
     assert "Valkey 연결 클라이언트 수(현재): valkey-cart 5개" in by
     assert "Valkey 키 조회 적중률(현재, 5분): valkey-cart 80.0%" in by
-    assert POOL_NOTE in result.limitations and COUNT_NOTE in result.limitations
-    assert any("pg_stat_statements" in x for x in result.limitations)  # 수집 범위 안내
+    assert POOL_NOTE in result.scope_notes and COUNT_NOTE in result.scope_notes
+    assert any("pg_stat_statements" in x for x in result.scope_notes)  # 수집 범위 안내
     # 발생 수는 분석 구간 전체(30분) 증가량, 비율·지연은 5분 rate
     queried = [q for q, _ in fake.queries]
     assert any("increase(postgresql_deadlocks_total{}[1800s])" in q for q in queried)
