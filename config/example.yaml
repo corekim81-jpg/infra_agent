@@ -20,6 +20,7 @@ datasources:
     timeout_seconds: 20
   kubernetes:
     enabled: false           # 전용 읽기 계정 토큰 kubeconfig 준비 후 true (docs/environment.md 3.5절). 관리자 kubeconfig는 거부됨
+    auth: kubeconfig         # kubeconfig(토큰 kubeconfig 파일) | in_cluster(Pod의 ServiceAccount 토큰, 클러스터 내부 실행)
     kubeconfig_env: INFRA_AGENT_KUBECONFIG
     context: null            # null이면 current-context
     timeout_seconds: 15

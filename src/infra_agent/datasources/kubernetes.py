@@ -21,7 +21,7 @@ import os
 import re
 import ssl
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,7 +31,7 @@ import httpx
 import yaml
 
 from infra_agent import __version__
-from infra_agent.config.settings import KubernetesConfig
+from infra_agent.config.settings import KubernetesAuth, KubernetesConfig
 from infra_agent.datasources.errors import (
     ConnectFailedError,
     DataSourceError,
@@ -105,6 +105,9 @@ class KubeAccess:
     """PEM 형식 CA 인증서 (certificate-authority-data를 복호화한 값)."""
     ca_file: str | None = None
     insecure: bool = False
+    token_file: str | None = None
+    """토큰을 다시 읽을 파일. 클러스터 내부의 ServiceAccount 토큰은 주기적으로 교체되므로
+    요청마다 파일 변경을 확인합니다."""
     """kubeconfig의 insecure-skip-tls-verify. 서버 인증서를 검증하지 않으므로 점검에서 경고."""
 
 
@@ -213,10 +216,85 @@ def load_kubeconfig(
     )
 
 
+SERVICE_ACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+"""Pod에 ServiceAccount 토큰·CA가 마운트되는 표준 경로."""
+
+
+def access_in_cluster(
+    environ: Mapping[str, str] | None = None, sa_dir: Path = SERVICE_ACCOUNT_DIR
+) -> KubeAccess:
+    """Pod에 마운트된 ServiceAccount 토큰으로 접속 정보를 만듭니다 (클러스터 내부 실행).
+
+    토큰·CA는 Pod의 ServiceAccount 것만 씁니다. 그 계정이 읽기 전용인지는 권한 점검
+    (`assess_rules`)이 확인합니다."""
+    env = os.environ if environ is None else environ
+    host, port = env.get("KUBERNETES_SERVICE_HOST"), env.get("KUBERNETES_SERVICE_PORT")
+    if not host or not port:
+        raise MissingCredentialError(
+            SOURCE,
+            "클러스터 내부 실행이 아닙니다 (KUBERNETES_SERVICE_HOST·PORT 없음). "
+            "클러스터 밖에서는 datasources.kubernetes.auth: kubeconfig를 사용하세요.",
+        )
+    token_file, ca_file = sa_dir / "token", sa_dir / "ca.crt"
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MissingCredentialError(
+            SOURCE,
+            f"ServiceAccount 토큰을 읽지 못했습니다 ({type(exc).__name__}). Pod의 "
+            "serviceAccountName과 automountServiceAccountToken 설정을 확인하세요.",
+        ) from exc
+    if not token:
+        raise MissingCredentialError(SOURCE, "ServiceAccount 토큰 파일이 비어 있습니다")
+    if not ca_file.is_file():
+        raise KubeconfigError(SOURCE, "ServiceAccount CA 인증서(ca.crt)가 없습니다")
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # IPv6
+    return KubeAccess(
+        server=f"https://{host}:{port}",
+        token=token,
+        context="in-cluster",
+        ca_file=str(ca_file),
+        token_file=str(token_file),
+    )
+
+
+class _BearerAuth(httpx.Auth):
+    """요청마다 Bearer 토큰을 붙입니다. 토큰 파일이 있으면 바뀌었을 때 다시 읽습니다."""
+
+    def __init__(self, access: KubeAccess, redactor: Redactor) -> None:
+        self._token = access.token
+        self._path = Path(access.token_file) if access.token_file else None
+        self._mtime: float | None = None
+        self._redactor = redactor
+        redactor.register(self._token)
+
+    def _current(self) -> str:
+        if self._path is None:
+            return self._token
+        try:
+            mtime = self._path.stat().st_mtime
+            if mtime != self._mtime:
+                token = self._path.read_text(encoding="utf-8").strip()
+                if token:
+                    self._token = token
+                    self._redactor.register(token)
+                self._mtime = mtime
+        except (OSError, UnicodeDecodeError):
+            pass  # 교체 중 일시적으로 읽지 못하면 직전 토큰을 씁니다(만료됐다면 401로 드러남)
+        return self._token
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self._current()}"
+        yield request
+
+
 def access_from_config(
     config: KubernetesConfig, environ: Mapping[str, str] | None = None
 ) -> KubeAccess:
-    """설정의 `kubeconfig_env`가 가리키는 파일에서 연결 정보를 읽습니다."""
+    """설정의 인증 방식에 따라 연결 정보를 읽습니다 (kubeconfig 파일 또는 클러스터 내부)."""
+    if config.auth is KubernetesAuth.IN_CLUSTER:
+        return access_in_cluster(environ)
     env = os.environ if environ is None else environ
     path = env.get(config.kubeconfig_env)
     if not path:
@@ -296,14 +374,13 @@ class KubernetesClient:
         self._backoff = backoff_seconds
         self._sleep = sleep
         self.last_elapsed_ms: int | None = None
-        (redactor or default_redactor).register(access.token)
         self._client = httpx.AsyncClient(
             base_url=access.server,
             headers={
                 "User-Agent": f"infra-agent/{__version__}",
                 "Accept": "application/json",
-                "Authorization": f"Bearer {access.token}",
             },
+            auth=_BearerAuth(access, redactor or default_redactor),
             timeout=httpx.Timeout(timeout_seconds),
             transport=transport,
             verify=_verify(access) if transport is None else True,

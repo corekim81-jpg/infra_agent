@@ -1,0 +1,19 @@
+# 이미지 빌드 컨텍스트에서 제외 — 비밀값·로컬 설정·실제 데이터가 이미지에 들어가지 않게 합니다.
+.git
+.venv
+venv
+var
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.*
+config/local.yaml
+config/*.local.yaml
+*.kubeconfig
+kubeconfig*
+tests
+docs

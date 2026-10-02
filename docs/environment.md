@@ -31,6 +31,37 @@
 - WSL, Docker, 클라우드 실행 환경에서는 `127.0.0.1`이 Windows 호스트의 터널을 가리키지 않을 수 있으므로 접속 경로를 별도로 확인합니다.
 - 프로그램은 시작 시 각 주소의 연결 가능 여부를 점검하고, 실패하면 "터널 미실행 또는 경로 오류 가능"을 포함한 진단 메시지를 출력합니다(설계).
 
+### 1.2 컨테이너·클러스터 내부 실행 (#39)
+
+목표 실행 환경(Rocky Linux 9 컨테이너, Kubernetes 내부)용 파일입니다. **이미지 빌드와 클러스터 내부 실행은 아직 실제로 확인하지 못했습니다**(작업 환경에 컨테이너 런타임이 없음). 같은 설치 과정을 이미지 밖에서 실행해 패키지 설치와 CLI 동작만 확인했습니다.
+
+| 파일 | 내용 |
+| --- | --- |
+| [`deploy/Containerfile`](../deploy/Containerfile) | Rocky Linux 9(minimal) + Python 3.11. 비루트 사용자(10001), 진입점 `infra-agent`. 코드와 조회 카탈로그·평가 세트만 포함 |
+| `.dockerignore` | `.env`, `config/local.yaml`, `*.kubeconfig`, `var/`, `.git` 등을 빌드 컨텍스트에서 제외 |
+| [`deploy/k8s/config.yaml`](../deploy/k8s/config.yaml) | 설정 ConfigMap 예시 (`profile: in-cluster`, `kubernetes.auth: in_cluster`, 모델 없음). 데이터 소스 주소는 예시이므로 실제 서비스 주소로 바꿉니다 |
+| [`deploy/k8s/job-check.yaml`](../deploy/k8s/job-check.yaml) | 연결 점검 Job (`infra-agent check`) |
+| [`deploy/k8s/job-ask.yaml`](../deploy/k8s/job-ask.yaml) | 질문 한 건을 실행하는 Job 예시 (HTTP API 제공 전의 임시 실행 방법) |
+
+- **Kubernetes API 인증:** `datasources.kubernetes.auth: in_cluster`이면 Pod에 마운트된 ServiceAccount 토큰·CA(`/var/run/secrets/kubernetes.io/serviceaccount`)와 `KUBERNETES_SERVICE_HOST`·`PORT`로 접속합니다. 토큰은 주기적으로 교체되므로 요청마다 파일 변경을 확인해 다시 읽습니다. kubeconfig 파일은 쓰지 않습니다.
+- **계정:** Job은 3.5절의 전용 읽기 계정(`infra-agent-reader`)으로 실행합니다. 그 ServiceAccount는 토큰 자동 마운트가 꺼져 있고 Job의 Pod에서만 켭니다. 권한 점검(쓰기·실행·프록시·secrets 권한이 있으면 조회하지 않음)은 클러스터 밖 실행과 같습니다.
+- **Pod 보안 설정:** 비루트, 권한 상승 금지, 읽기 전용 루트 파일시스템, capability 전부 제거. 쓰는 경로는 `var/`(emptyDir)뿐입니다.
+- **모델:** 이미지에는 모델 SDK를 넣지 않았습니다. 클러스터 내부 실행은 모델 없이(`llm.provider: fake`) 규칙·코드 판정만 합니다. 운영 데이터의 외부 모델 전송 범위가 미확정이기 때문입니다(architecture.md 11절).
+
+**실행 절차 (사용자 작업, k3d 기준)**
+
+```bash
+# 1) 이미지 빌드 (저장소 루트, docker 또는 podman)
+docker build -f deploy/Containerfile -t infra-agent:dev .
+# 2) k3d 클러스터에 이미지 넣기 (레지스트리를 쓰면 push 후 Job의 image를 바꿉니다)
+k3d image import infra-agent:dev -c <클러스터 이름>
+# 3) 읽기 계정(이미 적용했다면 생략), 설정, 점검 Job
+kubectl apply -f deploy/rbac/infra-agent-reader.yaml
+kubectl apply -f deploy/k8s/config.yaml        # 데이터 소스 주소를 실제 서비스로 바꾼 뒤
+kubectl apply -f deploy/k8s/job-check.yaml
+kubectl -n infra-agent logs job/infra-agent-check
+```
+
 ## 2. 설정 구조
 
 ### 2.1 원칙
@@ -46,7 +77,7 @@
 | --- | --- | --- | --- |
 | `ci` | CI, 단위·계약 테스트 | 가상 응답(HTTP 목) | 가짜 모델 |
 | `dev-tunnel` | Windows 호스트 + SSH 터널로 개발 서버 연동 | 1.1절 로컬 주소 | 설정에 따름 |
-| `in-cluster` | (향후) Kubernetes 내부 실행 | 클러스터 서비스 DNS | 설정에 따름 |
+| `in-cluster` | Kubernetes 내부 실행 (1.2절, #39) | 클러스터 서비스 DNS, Kubernetes API는 Pod의 ServiceAccount 토큰(`auth: in_cluster`) | 설정에 따름 (이미지에는 모델 SDK 없음 → `fake`) |
 
 ### 2.3 설정 파일
 

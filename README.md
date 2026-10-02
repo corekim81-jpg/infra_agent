@@ -223,9 +223,12 @@ python -m pytest -m "not live"
 
 Kubernetes API 연동(선택)은 전용 읽기 계정이 필요합니다. 클러스터 관리자가 [deploy/rbac/infra-agent-reader.yaml](deploy/rbac/infra-agent-reader.yaml)을 적용하고 `deploy/rbac/make-reader-config.sh`로 토큰 kubeconfig를 만든 뒤, 그 경로를 `INFRA_AGENT_KUBECONFIG`에 넣고 설정에서 `datasources.kubernetes.enabled: true`로 켭니다. 관리자 kubeconfig(클라이언트 인증서·exec 플러그인)는 거부합니다. 절차는 [docs/environment.md](docs/environment.md) 3.5절을 봅니다.
 
+컨테이너 이미지(Rocky Linux 9)와 클러스터 내부 실행용 매니페스트는 `deploy/Containerfile`, `deploy/k8s/`에 있습니다. 클러스터 내부에서는 Pod의 전용 읽기 ServiceAccount 토큰으로 Kubernetes API에 접속하며(`datasources.kubernetes.auth: in_cluster`), 모델 없이 실행합니다. 이미지 빌드와 클러스터 내부 실행은 아직 실제 환경에서 확인하지 못했습니다. 절차는 [docs/environment.md](docs/environment.md) 1.2절을 봅니다.
+
 이후 단계에서 다음 항목을 추가합니다.
 
-- 컨테이너 실행 및 Kubernetes 배포 방법
+- HTTP API와 상시 실행 배포(Deployment)
+- MCP 경로
 
 ## 테스트 및 품질 평가
 
