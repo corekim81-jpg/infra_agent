@@ -351,6 +351,7 @@ DataSource (인터페이스)
 
 - **읽기 전용:** 도구 계층에 쓰기 작업을 제공하지 않습니다. Kubernetes는 `get/list/watch`만 허용하는 전용 ServiceAccount/RBAC를 사용하고 `secrets` 리소스 조회 권한은 부여하지 않습니다.
 - **Kubernetes 계정:** 관리자 kubeconfig를 프로그램에 사용하지 않습니다. 전용 읽기 계정의 kubeconfig 경로만 설정으로 받고, ServiceAccount 토큰 형식만 허용합니다(클라이언트 인증서·exec 플러그인·auth-provider·사용자 이름/비밀번호·가장 설정은 거부). 서버 인증서를 검증하지 않는 `insecure-skip-tls-verify`는 토큰이 노출될 수 있어 설정에서 명시적으로 허용(`allow_insecure_tls`)한 경우에만 쓰고, 답변 한계에 표시합니다. 클라이언트는 허용 목록 리소스의 목록 조회(GET)만 보내며, 유일한 POST는 저장되지 않는 권한 점검(`SelfSubjectRulesReview`)입니다. 권한 점검에서 쓰기·Pod 실행·프록시·secrets 읽기 권한이 보이면 조회하지 않습니다. RBAC 매니페스트는 `deploy/rbac/infra-agent-reader.yaml`입니다. 클러스터 내부 실행(`auth: in_cluster`, #39)에서는 kubeconfig 대신 Pod에 마운트된 그 계정의 토큰을 쓰고(교체되면 다시 읽음), 같은 권한 점검을 적용합니다. 컨테이너는 비루트·읽기 전용 루트 파일시스템으로 실행합니다(environment.md 1.2절).
+- **HTTP API(#45):** `/v1/*`는 Bearer 토큰이 필요하고, 토큰이 없으면 시작하지 않습니다(명시적 익명 허용 제외). 분석 흐름은 CLI와 같아 조회만 수행하며, 동시 처리 수·질문 길이·제한 시간을 둡니다. 응답은 값 단위로 마스킹하고 내부 오류 내용은 내보내지 않습니다. 문서·스키마 엔드포인트와 외부 노출은 제공하지 않습니다.
 - **모델 SDK 제한:** Claude Agent SDK의 내장 파일·셸 도구와 로컬 설정 로딩을 비활성화하고, 에이전트별 읽기 전용 도구만 허용합니다(10.1절).
 - **모델 입력 범위:** 외부 모델로 보내는 데이터는 `llm.data_policy`로 제한합니다(10.2절).
 - **비밀값 보호:** 인증정보를 코드·Git·모델 입력·답변·로그에 남기지 않습니다. 로그 출력 전에 토큰·비밀번호 패턴을 마스킹합니다.
@@ -425,7 +426,7 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | Kubernetes 클라이언트 | `httpx` 기반 얇은 읽기 전용 클라이언트(`datasources/kubernetes.py`), 전용 읽기 계정 토큰 kubeconfig. 공식 `kubernetes` 패키지는 쓰기 API 전체와 kubeconfig의 모든 인증 방식(exec·클라이언트 인증서)을 함께 가져와 "읽기 전용·전용 계정만" 규칙을 코드로 좁히기 어렵고, 필요한 조회가 목록 몇 개뿐이라 쓰지 않음 | 도입됨 (#35) |
 | MCP (데이터 접근 경로) | 공식 `mcp` Python SDK, 직접 API 구현 이후 추가 | 제안 |
 | 스키마·설정 | Pydantic v2, pydantic-settings + YAML | 제안 |
-| 인터페이스 | CLI 먼저, 이후 FastAPI 기반 HTTP API | 제안 |
+| 인터페이스 | CLI, FastAPI 기반 HTTP API(`infra_agent/api`, 선택 의존성 `[api]`) | 도입됨 (CLI #11, HTTP API #45) |
 
 ## 11. 미확정 사항
 
@@ -441,7 +442,7 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | `pg_stat_statements`, 실행 계획, 잠금 그래프 | 수집되지 않음 | DB Agent 확장 | 확장 단계 |
 | DNS 응답 코드 | Hubble 지표에 없음 | Network Agent DNS 오류 분석 | 확장 단계 |
 | Hubble Relay 직접 조회 | 미확인 | Network Agent 확장 | 확장 단계 |
-| 사용자 인터페이스 형태 | CLI 먼저 (제안) | 인터페이스 계층 | HTTP API 단계 |
+| 사용자 인터페이스 형태 | CLI와 HTTP API(#45). 대화형 후속 질문·화면은 미정 | 인터페이스 계층 | 확장 단계 |
 | 기본 임계값 | 미정 | 판정 결과 | Server Agent 구현 시 |
 | 대화 이력(후속 질문) 지원 | 미정 | 상태 계층 | 초기 범위 확정 시 |
 

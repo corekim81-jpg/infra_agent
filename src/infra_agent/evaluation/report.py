@@ -13,12 +13,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from infra_agent.answer.render import render_text
 from infra_agent.evaluation.checks import CHECK_LABELS, CheckStatus
 from infra_agent.evaluation.runner import QuestionResult
-from infra_agent.security import redact
+from infra_agent.security import redact, redact_values
 from infra_agent.units import fmt_time
 
 MARK = {CheckStatus.PASS: "O", CheckStatus.FAIL: "X", CheckStatus.SKIP: "-"}
@@ -155,20 +154,6 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
-def _redact_values(value: Any) -> Any:
-    """JSON 직렬화 전에 문자열 값마다 마스킹합니다.
-
-    직렬화한 뒤 전체를 마스킹하면 `token=***\"`의 이스케이프가 지워져 JSON이 깨질 수 있습니다.
-    """
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, dict):
-        return {k: _redact_values(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_redact_values(v) for v in value]
-    return value
-
-
 def to_json(results: Sequence[QuestionResult], info: RunInfo) -> str:
     payload = {
         "started_at": info.started_at.isoformat(),
@@ -203,7 +188,7 @@ def to_json(results: Sequence[QuestionResult], info: RunInfo) -> str:
             for r in results
         ],
     }
-    return json.dumps(_redact_values(payload), ensure_ascii=False, indent=2)
+    return json.dumps(redact_values(payload), ensure_ascii=False, indent=2)
 
 
 def write_report(

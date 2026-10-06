@@ -71,3 +71,20 @@ def test_network_policy_example_opens_query_ports_only() -> None:
         }
         ports |= {p["port"] for p in rule["ports"]}
     assert ports == {9090, 3100, 3200}
+
+
+def test_deployment_serves_api_with_token_from_secret() -> None:
+    text = (ROOT / "deploy/k8s/deployment.yaml").read_text(encoding="utf-8")
+    docs = {d["kind"]: d for d in yaml.safe_load_all(text) if d}
+    pod = docs["Deployment"]["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "infra-agent-reader"
+    (container,) = pod["containers"]
+    assert container["args"][0] == "serve"
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    (env,) = container["env"]
+    # 토큰 값은 매니페스트에 없고 Secret에서만 받음
+    assert env["name"] == "INFRA_AGENT_API_TOKEN" and "value" not in env
+    assert env["valueFrom"]["secretKeyRef"] == {"name": "infra-agent-api", "key": "token"}
+    assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
+    assert docs["Service"]["spec"]["type"] == "ClusterIP"  # 외부 노출 없음
+    assert "Secret" not in docs and "Ingress" not in docs
