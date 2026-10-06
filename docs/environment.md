@@ -68,6 +68,18 @@
 - 토큰은 환경 변수(`api.token_env`, 기본 `INFRA_AGENT_API_TOKEN`)로만 받습니다. 클러스터에서는 Secret으로 주입하며 값은 매니페스트에 넣지 않습니다.
 - 제한: 동시 처리 `api.max_concurrent_requests`(기본 2, 넘으면 429), 질문 길이 `api.max_question_chars`(기본 2000자, 넘으면 413), 분석 제한 시간 초과 시 504. 내부 오류는 `error_id`만 돌려주고 내용은 로그(마스킹)에 남깁니다.
 - 문서·스키마 엔드포인트(`/docs`, `/openapi.json`)는 열지 않습니다. 외부 노출(Ingress)과 TLS는 포함하지 않으므로, 클러스터 밖에서는 `kubectl port-forward`로 확인합니다.
+- **MCP 서버(#49):** infra_agent를 MCP 서버로 제공합니다(선택 의존성 `[mcp]`, 공식 `mcp` Python SDK 2.x).
+
+  | 도구 | 내용 |
+  | --- | --- |
+  | `ask_infra` | 인자 `question`(필수), `range`, `namespace`, `node`, `pod`, `use_llm`, `format`(text·json). 답변 텍스트 또는 JSON 문자열 |
+  | `check_infra_sources` | 데이터 소스 연결 상태(JSON 문자열) |
+
+  - 두 도구 모두 읽기 전용으로 표시되며, 입력 검증·동시 처리 제한·제한 시간은 HTTP API와 같은 코드(`service.py`)를 씁니다. 같은 프로세스에서는 HTTP API와 동시 처리 수를 함께 셉니다.
+  - stdio: `infra-agent mcp --config <설정>`. MCP 클라이언트가 이 명령을 프로세스로 실행합니다(인증 없음, 로컬 전용).
+  - HTTP: `api.mcp_enabled: true`이면 `serve`가 `/mcp`(streamable HTTP, 상태 없음)로 제공합니다. HTTP API와 같은 Bearer 토큰이 없으면 401입니다. 토큰으로 보호할 때는 클러스터 서비스 이름으로 접속할 수 있게 Host 검사를 끄고, 익명 허용(로컬 개발)일 때는 로컬 주소만 받습니다.
+  - 의도한 오류(입력 오류, 제한 초과)만 문장으로 돌려주고, 그 밖의 오류 내용은 내보내지 않습니다.
+  - **확인 범위:** 단위 테스트(MCP 클라이언트로 도구 호출, HTTP 경로의 인증), 로컬에서 실제 프로세스로 stdio 실행·도구 호출까지 확인했습니다. 클러스터 내부에서 다른 에이전트가 `/mcp`를 호출하는 것은 아직 확인하지 못했습니다(호출하는 쪽 네임스페이스에서 infra-agent로 나가는 네트워크 정책이 필요할 수 있음).
 - **개발 서버 확인(#45, 2026-10-06, 사용자 실행):** 이미지 재빌드 후 Deployment가 정상 배포됐고, port-forward로 `/healthz` 응답, 토큰 없는 질문 401, 토큰 있는 질문의 답변(`status: ok`, Server Agent 성공)을 확인했습니다. 처음에는 로컬 포트가 다른 프로그램과 겹쳐 엉뚱한 404가 나왔으므로, port-forward는 비어 있는 포트를 쓰고 `/healthz`로 먼저 확인합니다. 확인하지 않은 것: 동시 요청 제한(429)·제한 시간(504)의 클러스터 내 동작, 장시간 실행 중 토큰 교체.
 
 **실행 절차 (사용자 작업, k3d 기준)**
