@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 import re
 
+from infra_agent.datasources.base import TracesSource
 from infra_agent.datasources.errors import DataSourceError
-from infra_agent.datasources.tempo import TempoClient
 from infra_agent.schemas import AgentName, DataSourceKind, TimeRange, ToolResult, ToolStatus
 from infra_agent.timeutil import utc_now
 from infra_agent.tools.catalog_query import QueryOutcome, ToolBudget
@@ -60,7 +60,7 @@ def build_traceql(
 class TraceSearchTool:
     def __init__(
         self,
-        tempo: TempoClient,
+        tempo: TracesSource,
         *,
         agent: AgentName,
         budget: ToolBudget,

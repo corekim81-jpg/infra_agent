@@ -34,6 +34,7 @@ from infra_agent.agents.service import ServiceAgent
 from infra_agent.answer.synthesis import synthesize
 from infra_agent.catalog import Catalog
 from infra_agent.config.settings import Settings
+from infra_agent.datasources.base import LogsSource, MetricsSource, TracesSource
 from infra_agent.datasources.errors import DataSourceError
 from infra_agent.datasources.kubernetes import KubernetesClient
 from infra_agent.datasources.loki import LokiClient
@@ -75,15 +76,18 @@ class AnswerBundle:
 
 @dataclass
 class AgentDeps:
-    """요청 단위로 에이전트가 공유하는 자원."""
+    """요청 단위로 에이전트가 공유하는 자원.
+
+    지표·로그·트레이스는 조회 인터페이스(`datasources.base`)로 받으므로, 직접 API 클라이언트 대신
+    같은 인터페이스의 다른 구현을 넣을 수 있습니다."""
 
     settings: Settings
     catalog: Catalog
-    prometheus: PrometheusClient
+    prometheus: MetricsSource
     tool_budget: ToolBudget
     llm: BudgetedLLM | None
-    loki: LokiClient | None = None
-    tempo: TempoClient | None = None
+    loki: LogsSource | None = None
+    tempo: TracesSource | None = None
     kubernetes: KubernetesClient | None = None
     kubernetes_note: str | None = None
     """Kubernetes API를 켰지만 연결하지 못한 이유 (kubeconfig 오류 등)."""

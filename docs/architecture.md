@@ -309,7 +309,7 @@ FinalAnswer
 
 ## 7. 데이터 접근 계층
 
-> **일부 구현 (#7):** `src/infra_agent/datasources/` — 공통 HTTP 기반(`http.py`: GET 전용, 허용 경로 목록, 일시 오류만 재시도, 토큰 마스킹), `prometheus.py`(ready·buildinfo·runtimeinfo·지표/라벨/메타데이터·query·query_range·selector 이스케이프), `loki.py`·`tempo.py`(탐색용 최소 기능), `probe.py`(연결 점검). Kubernetes·Hubble·MCP 경로와 도구 계층은 아직 없습니다.
+> **일부 구현 (#7):** `src/infra_agent/datasources/` — 공통 HTTP 기반(`http.py`: GET 전용, 허용 경로 목록, 일시 오류만 재시도, 토큰 마스킹), `prometheus.py`(ready·buildinfo·runtimeinfo·지표/라벨/메타데이터·query·query_range·selector 이스케이프), `loki.py`·`tempo.py`(탐색용 최소 기능), `probe.py`(연결 점검), `kubernetes.py`(읽기 전용 Kubernetes API, #35). 조회 도구는 구체 클라이언트가 아니라 조회 인터페이스(`base.py`: `MetricsSource`·`LogsSource`·`TracesSource`, #47)에 의존하므로, 같은 메서드를 가진 다른 구현으로 바꿀 수 있습니다. Hubble Relay 직접 조회와 MCP 구현은 아직 없습니다.
 
 ```text
 DataSource (인터페이스)
@@ -424,7 +424,7 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | Python | 3.11 이상 (개발: Windows 호스트, 목표: Rocky Linux 9) | 제안 |
 | HTTP 클라이언트 | `httpx` (비동기) | 제안 |
 | Kubernetes 클라이언트 | `httpx` 기반 얇은 읽기 전용 클라이언트(`datasources/kubernetes.py`), 전용 읽기 계정 토큰 kubeconfig. 공식 `kubernetes` 패키지는 쓰기 API 전체와 kubeconfig의 모든 인증 방식(exec·클라이언트 인증서)을 함께 가져와 "읽기 전용·전용 계정만" 규칙을 코드로 좁히기 어렵고, 필요한 조회가 목록 몇 개뿐이라 쓰지 않음 | 도입됨 (#35) |
-| MCP (데이터 접근 경로) | 공식 `mcp` Python SDK, 직접 API 구현 이후 추가 | 제안 |
+| MCP (데이터 접근 경로) | 공식 `mcp` Python SDK. 조회 인터페이스는 분리됨(#47). 대상 MCP 서버와 도구 규격이 정해지면 그 인터페이스의 구현으로 추가 | 제안 (구현 없음) |
 | 스키마·설정 | Pydantic v2, pydantic-settings + YAML | 제안 |
 | 인터페이스 | CLI, FastAPI 기반 HTTP API(`infra_agent/api`, 선택 의존성 `[api]`) | 도입됨 (CLI #11, HTTP API #45) |
 
@@ -433,6 +433,7 @@ SDK 제한(항상 적용, `llm/claude_sdk.py`):
 | 항목 | 현재 상태 | 영향 | 결정·확인 시점 |
 | --- | --- | --- | --- |
 | 최종 모델 제공자·모델 | 1차 어댑터 Claude Agent SDK 구현됨(#15), 최종 미정 | 모델 계층 | 운영 적용 전 |
+| MCP 데이터 접근 경로의 대상 서버·도구 규격 | 미정. MCP 서버마다 도구 이름·인자·결과 형식이 달라 대상을 정해야 구현 가능 | 데이터 접근 계층 (13c) | 대상 서버 결정 시 |
 | **운영 환경**의 외부 모델 전송 허용 범위 | 미정 (개발 환경은 `full`로 결정, 기본값 `none`). Tempo span에 SQL 원문이 있음 | 에이전트 해석 방식, 보안 | 운영 적용 전 |
 | 라벨 값 의미 (`k8s_pod_phase`, 노드 조건, spanmetrics `status_code`·`span_kind`, 커넥션 상태) | 가정 (카탈로그 caveats) | 판정 정확도 | 각 에이전트 구현 시 값 검토 |
 | `k8s_pod_cpu_usage`, spanmetrics 지연 단위 | 가정 (cores, seconds). 노드·컨테이너 CPU는 cores로 검증됨 | 수치 해석 | 해당 에이전트 구현 시 |

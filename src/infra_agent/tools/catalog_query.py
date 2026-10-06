@@ -26,8 +26,9 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from infra_agent.catalog import Catalog, CatalogItem
+from infra_agent.datasources.base import MetricsSource
 from infra_agent.datasources.errors import DataSourceError
-from infra_agent.datasources.prometheus import PrometheusClient, escape_label_value
+from infra_agent.datasources.prometheus import escape_label_value
 from infra_agent.schemas import (
     AgentName,
     AnalysisContext,
@@ -104,7 +105,7 @@ class CatalogQueryTool:
     def __init__(
         self,
         catalog: Catalog,
-        prom: PrometheusClient,
+        prom: MetricsSource,
         *,
         agent: AgentName,
         budget: ToolBudget,
