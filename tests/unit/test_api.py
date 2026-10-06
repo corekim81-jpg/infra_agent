@@ -185,3 +185,43 @@ def test_serve_command_reports_missing_token(
     )
     assert main(["serve", "--config", str(config)]) == 2
     assert "INFRA_AGENT_API_TOKEN" in capsys.readouterr().err
+
+
+# --- MCP over HTTP (/mcp, #49)
+
+MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+
+
+def _rpc(method: str, params: dict[str, Any], id_: int = 1) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
+
+
+def test_mcp_endpoint_requires_token_and_calls_tools() -> None:
+    settings = load_settings(environ={**ENV, "INFRA_AGENT__API__MCP_ENABLED": "true"})
+    app = create_app(
+        settings, CATALOG, environ={"INFRA_AGENT_API_TOKEN": TOKEN}, answer=_answer, check=_check
+    )
+    # 클러스터 서비스 이름으로 접속해도(로컬 주소가 아닌 Host) 토큰이 있으면 동작해야 함
+    with TestClient(app, base_url="http://infra-agent.infra-agent.svc:8080") as client:
+        listing = _rpc("tools/list", {})
+        assert client.post("/mcp", json=listing, headers=MCP_HEADERS).status_code == 401
+        wrong = {**MCP_HEADERS, "Authorization": "Bearer wrong"}
+        assert client.post("/mcp", json=listing, headers=wrong).status_code == 401
+        headers = {**MCP_HEADERS, **AUTH}
+        tools = client.post("/mcp", json=listing, headers=headers).json()["result"]["tools"]
+        assert {t["name"] for t in tools} == {"ask_infra", "check_infra_sources"}
+        call = _rpc(
+            "tools/call",
+            {"name": "ask_infra", "arguments": {"question": "현재 서버 상태가 어때?"}},
+            2,
+        )
+        result = client.post("/mcp", json=call, headers=headers).json()["result"]
+        assert result["content"][0]["text"].startswith("질문: 현재 서버 상태가 어때?")
+        # 기존 엔드포인트는 그대로
+        assert client.get("/healthz").json() == {"status": "ok"}
+        assert client.post("/v1/ask", json={"question": "상태"}).status_code == 401
+
+
+def test_mcp_endpoint_is_off_by_default() -> None:
+    response = _client().post("/mcp", json=_rpc("tools/list", {}), headers={**MCP_HEADERS, **AUTH})
+    assert response.status_code == 404

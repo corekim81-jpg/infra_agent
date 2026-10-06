@@ -1,6 +1,6 @@
 # 개발 가이드
 
-> **상태: 13b단계 (#45) HTTP API 구현, 개발 서버에서 클러스터 내부 상시 실행 확인.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29), Kubernetes API 읽기 전용 연동(#35: 전용 읽기 계정 kubeconfig, 권한 점검, Pod 상태·Warning 이벤트, RBAC 매니페스트)이 있습니다.
+> **상태: 13c단계 (#49) MCP 서버 제공 구현, 클러스터 내부 호출은 확인 전.** 패키지 구성·설정·스키마·마스킹·테스트·CI(#5), 데이터 소스 클라이언트·탐색·카탈로그 로더(#7), otel-demo 카탈로그(#9), 모델 없이 동작하는 Server Agent와 `ask` 명령(#11), 모델 계층(`llm`, 질문 해석·Server Agent 원인 후보, #15), 실행 계획·제한된 병렬 실행기(#19), Kubernetes Agent(#21), Service Agent와 Loki·Tempo 조회(#23), DB Agent(#25), Network Agent(#27), 분야 간 교차 분석(#29), Kubernetes API 읽기 전용 연동(#35: 전용 읽기 계정 kubeconfig, 권한 점검, Pod 상태·Warning 이벤트, RBAC 매니페스트)이 있습니다.
 > Kubernetes API 연동은 개발 서버에서 live 확인했습니다(2026-10-02, 테스트용 Pod로 Pending 사유·Warning 이벤트 표시 확인). 구간 내 비정상 종료 사유 표시는 아직 확인하지 못했습니다. 대표 질문 품질 평가(12b)는 `eval` 명령과 개발 서버 실행 기록과 사람 검토(2026-10-01, 7/7 통과)가 있습니다. 검토에서 나온 후속 항목은 [evaluation.md](evaluation.md) 3절을 봅니다. 실제로 도입된 항목만 "도입됨"으로 표시합니다.
 > 시스템 설계는 [architecture.md](architecture.md), 개발 환경·설정은 [environment.md](environment.md), 기능 범위는 [README.md](../README.md)를 기준으로 합니다.
 
@@ -147,7 +147,8 @@ infra_agent/
 | 12b | 대표 질문 품질 평가 | 평가 세트(`config/eval/questions.yaml`), 결정적 평가 기준(`evaluation`), `eval` 명령, [evaluation.md](evaluation.md) | 대표 질문 7개 평가 기록 | 12 | 완료 (#31, PR #32; 개발 서버 평가 모델 사용·미사용 각 7/7 통과, 사람 검토 반영 2026-10-01) |
 | 13a | 컨테이너·클러스터 내부 실행 | Containerfile(Rocky Linux 9), in-cluster 인증(ServiceAccount 토큰 재읽기), 설정 ConfigMap·연결 점검 Job·질문 Job 예시 | 클러스터 내부 읽기 전용 실행 확인 | 8b, 12 | 완료 (#39; 개발 서버에서 이미지 빌드, 클러스터 내부 연결 점검·질문 실행 확인 2026-10-02) |
 | 13b | HTTP API·상시 실행 | FastAPI 기반 HTTP API(`infra-agent serve`: 토큰 인증, 동시 처리·질문 길이 제한), Deployment·Service | 클러스터 내부에서 질문 요청·응답 | 13a | 완료 (#45; 개발 서버에서 Deployment 배포, 인증 거부·질문 응답 확인 2026-10-06) |
-| 13c | MCP 경로 | 데이터 접근 계층의 MCP 구현 | MCP로 같은 조회 수행 | 13a | 계획 |
+| 13c | MCP 서버 제공 | infra_agent를 MCP 서버로 제공(`ask_infra`·`check_infra_sources`, stdio와 HTTP `/mcp`), 조회 인터페이스 분리(#47) | MCP 클라이언트로 도구 호출 | 13b | 구현 (#49; 단위 테스트·로컬 stdio 실행 확인. 클러스터 내부 호출은 확인 전) |
+| 13d | MCP 데이터 조회 경로 | 데이터 접근 계층의 MCP 구현 (대상 MCP 서버 결정 필요) | MCP로 같은 조회 수행 | 13c | 보류 (대상 서버 미정) |
 
 8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 개발 환경(OTel Demo)에서만 `full`로 결정되었습니다(2026-09-29). 운영 환경의 정책은 결정 전까지 `none`을 사용합니다.
 

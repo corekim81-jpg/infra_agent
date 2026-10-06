@@ -24,6 +24,8 @@ data:
         auth: in_cluster        # Pod의 ServiceAccount(infra-agent-reader) 토큰 사용
     catalog:
       path: config/catalog/otel-demo.yaml
+    api:
+      mcp_enabled: false      # true면 HTTP API와 함께 MCP 서버를 /mcp로 제공 (같은 토큰 필요)
     llm:
       provider: fake            # 이미지에는 모델 SDK가 없습니다 (규칙·코드 판정만)
       data_policy: none
