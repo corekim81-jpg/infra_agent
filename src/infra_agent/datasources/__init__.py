@@ -1,3 +1,4 @@
+from infra_agent.datasources.base import LogsSource, MetricsSource, TracesSource
 from infra_agent.datasources.errors import (
     ConnectFailedError,
     DataSourceError,
@@ -16,11 +17,14 @@ __all__ = [
     "DataSourceError",
     "DataSourceTimeoutError",
     "HttpStatusError",
+    "LogsSource",
     "LokiClient",
+    "MetricsSource",
     "MissingCredentialError",
     "PrometheusClient",
     "QueryError",
     "ResponseFormatError",
     "TempoClient",
+    "TracesSource",
     "build_selector",
 ]

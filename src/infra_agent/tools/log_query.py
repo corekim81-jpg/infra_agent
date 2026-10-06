@@ -16,8 +16,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from infra_agent.catalog import Catalog, CatalogItem
+from infra_agent.datasources.base import LogsSource
 from infra_agent.datasources.errors import DataSourceError
-from infra_agent.datasources.loki import LokiClient
 from infra_agent.schemas import (
     AgentName,
     DataSourceKind,
@@ -97,7 +97,7 @@ class LogQueryTool:
     def __init__(
         self,
         catalog: Catalog,
-        loki: LokiClient,
+        loki: LogsSource,
         *,
         agent: AgentName,
         budget: ToolBudget,
