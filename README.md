@@ -240,7 +240,7 @@ Kubernetes API 연동(선택)은 전용 읽기 계정이 필요합니다. 클러
 
 HTTP API는 질문을 받아 CLI `ask`와 같은 답변을 JSON과 텍스트로 돌려줍니다. 토큰 없이는 질문을 받지 않고, 동시 처리 수와 질문 길이를 제한합니다. 클러스터 내부 상시 실행용 매니페스트는 `deploy/k8s/deployment.yaml`입니다(클러스터 내부 Service만, 외부 노출 없음).
 
-MCP 서버는 infra_agent를 다른 에이전트·MCP 클라이언트의 도구로 제공합니다(`ask_infra`, `check_infra_sources`). 로컬에서는 stdio(`infra-agent mcp`), 클러스터에서는 HTTP API와 같은 포트의 `/mcp`로 제공하며 같은 토큰이 필요합니다. 클러스터 내부에서의 MCP 호출은 아직 실제 환경에서 확인하지 못했습니다.
+MCP 서버는 infra_agent를 다른 에이전트·MCP 클라이언트의 도구로 제공합니다(`ask_infra`, `check_infra_sources`). 로컬에서는 stdio(`infra-agent mcp`), 클러스터에서는 HTTP API와 같은 포트의 `/mcp`로 제공하며 같은 토큰이 필요합니다. 개발 서버 클러스터에서 port-forward로 도구 목록 조회와 두 도구 실행을 확인했습니다. 다른 네임스페이스의 Pod가 `/mcp`를 직접 호출하는 경우는 아직 확인하지 못했습니다.
 
 이후 단계에서 다음 항목을 추가합니다.
 
