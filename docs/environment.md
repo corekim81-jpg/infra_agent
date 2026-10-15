@@ -86,7 +86,11 @@
   - `tools/list`: HTTP 200, `ask_infra`·`check_infra_sources` 두 도구가 읽기 전용 표시(`readOnlyHint: true`)와 함께 나옴.
   - `tools/call check_infra_sources`: HTTP 200, `isError: false`. Prometheus·Loki·Tempo·Kubernetes API 4개 소스 모두 연결·준비 상태.
   - `tools/call ask_infra`(Pod 재시작·Pending 질문, `use_llm: false`): HTTP 200, `isError: false`. CLI `ask`와 같은 형식의 답변이 왔고 Kubernetes Agent만 실행됨(Prometheus 지표 11개, Kubernetes API 권한·Pod·Warning 이벤트 조회).
-  - 확인하지 않은 것: 다른 네임스페이스의 Pod에서 Service 주소로 `/mcp`를 직접 호출하는 경우(호출하는 쪽 네임스페이스에서 infra-agent로 나가는 네트워크 정책이 필요할 수 있음), 실제 MCP 클라이언트(에이전트)의 연결, 토큰 없는 `/mcp` 호출의 401(단위 테스트로만 확인).
+  - 확인하지 않은 것: 다른 네임스페이스의 Pod에서 Service 주소로 `/mcp`를 직접 호출하는 경우(→ 아래 #52 확인에서 확인함), 실제 MCP 클라이언트(에이전트)의 연결, 토큰 없는 `/mcp` 호출의 401(단위 테스트로만 확인).
+- **개발 서버 다른 네임스페이스 호출 확인(#52, 2026-10-15, 사용자 실행):** #53 병합 후 이미지를 다시 빌드하고, 점검용 네임스페이스 `mcp-client-test`에서 `deploy/k8s/job-mcp-check.yaml`을 실행했습니다. Service 주소(`infra-agent.infra-agent.svc:8080/mcp`)로 연결·MCP 초기화 성공, 도구 `ask_infra`·`check_infra_sources` 확인, `check_infra_sources` 결과 Prometheus·Loki·Tempo·Kubernetes API 모두 정상, `결과: 정상`(Job 성공). 점검 후 네임스페이스를 삭제해 토큰 복사본도 지웠습니다.
+  - 이 클러스터에서는 추가 네트워크 정책 없이 접속됐습니다(이 경로를 막는 정책이 적용되어 있지 않음).
+  - 확인하지 않은 것: 접근 제한 정책 예시(`networkpolicy-api-clients-example.yaml`) 적용 후 동작, `mcp-check --ask`의 클러스터 내 실행, 실제 에이전트(MCP 클라이언트 제품)의 연결.
+  - 처음 시도에서는 이미지 빌드 명령의 빌드 위치(` .`)가 빠져 이전 이미지가 들어가 `invalid choice: 'mcp-check'`로 실패했습니다. 새 이미지인지는 `docker run --rm infra-agent:dev --help`에 `mcp-check`가 보이는지로 확인합니다.
 - **개발 서버 확인(#45, 2026-10-06, 사용자 실행):** 이미지 재빌드 후 Deployment가 정상 배포됐고, port-forward로 `/healthz` 응답, 토큰 없는 질문 401, 토큰 있는 질문의 답변(`status: ok`, Server Agent 성공)을 확인했습니다. 처음에는 로컬 포트가 다른 프로그램과 겹쳐 엉뚱한 404가 나왔으므로, port-forward는 비어 있는 포트를 쓰고 `/healthz`로 먼저 확인합니다. 확인하지 않은 것: 동시 요청 제한(429)·제한 시간(504)의 클러스터 내 동작, 장시간 실행 중 토큰 교체.
 
 **배포된 MCP 점검 (`mcp-check`, #52)** — 호출할 위치에서 공식 MCP 클라이언트로 `/mcp`에 접속해 연결, 토큰 인증, 도구 목록, `check_infra_sources` 실행을 차례로 확인합니다. `--ask "<질문>"`을 주면 `ask_infra`도 모델 없이 실행합니다. 토큰은 환경 변수(기본 `INFRA_AGENT_API_TOKEN`, `--token-env`로 변경)에서만 읽고 출력하지 않습니다. 모든 단계와 데이터 소스가 정상이면 종료 코드 0, 아니면 1입니다. 실패하면 막힌 단계를 오류 코드로 구분합니다.

@@ -10,7 +10,11 @@
 #   kubectl -n mcp-client-test create secret generic infra-agent-api-client \
 #     --from-literal=token="$(kubectl -n infra-agent get secret infra-agent-api -o jsonpath='{.data.token}' | base64 -d)"
 #   kubectl apply -f deploy/k8s/job-mcp-check.yaml
-#   kubectl -n mcp-client-test wait --for=condition=complete --timeout=180s job/infra-agent-mcp-check
+#   # 성공·실패 중 먼저 나는 쪽을 기다림(wait --for=condition=complete는 실패 시 제한 시간까지 기다림)
+#   for i in $(seq 36); do
+#     s=$(kubectl -n mcp-client-test get job infra-agent-mcp-check -o jsonpath='{.status.succeeded}{.status.failed}')
+#     [ -n "$s" ] && break; sleep 5
+#   done
 #   kubectl -n mcp-client-test logs job/infra-agent-mcp-check
 #   kubectl delete namespace mcp-client-test        # 점검이 끝나면 정리(토큰 복사본도 함께 삭제)
 # 실패하면 Job이 종료 코드 1로 끝나고, 로그의 [오류 코드]와 안내로 막힌 단계를 확인합니다.
