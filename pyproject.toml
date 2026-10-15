@@ -25,6 +25,11 @@ dev = [
     "types-PyYAML>=6.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "mcp>=2,<3",
+]
+
+mcp = [
+    "mcp>=2,<3",
 ]
 
 api = [

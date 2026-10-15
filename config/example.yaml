@@ -58,6 +58,7 @@ api:                         # HTTP API (infra-agent serve, 선택 의존성 [ap
   allow_anonymous: false     # true면 토큰 없이 질문을 받음 (로컬 개발 전용)
   max_concurrent_requests: 2 # 넘으면 429로 거절
   max_question_chars: 2000
+  mcp_enabled: false         # true면 serve가 MCP 서버를 /mcp로 함께 제공 (선택 의존성 [mcp], 같은 토큰 필요)
 
 analysis:                    # 판정 기준 (제안 기본값)
   utilization_warning: 0.8   # 사용량/할당 가능량(또는 limit) 경고

@@ -145,6 +145,10 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_config_arg(serve)
     serve.add_argument("--host", default=None, help="수신 주소 (기본: 설정 api.host)")
     serve.add_argument("--port", type=int, default=None, help="수신 포트 (기본: 설정 api.port)")
+    mcp = sub.add_parser(
+        "mcp", help="MCP 서버를 stdio로 실행합니다 (선택 의존성 [mcp] 필요, 읽기 전용 도구)"
+    )
+    _add_config_arg(mcp)
     return parser
 
 
@@ -459,6 +463,36 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """MCP 서버를 stdio로 실행합니다. 표준 출력은 MCP 메시지 전용이라 안내는 표준 오류로 냅니다."""
+    settings = _load(args.config_path)
+    if settings is None:
+        return EXIT_CONFIG_ERROR
+    if not settings.datasources.prometheus.enabled:
+        print("Prometheus가 비활성화되어 있어 답할 수 없습니다.", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    if not settings.catalog.path:
+        print("카탈로그 경로(catalog.path)가 설정되지 않았습니다.", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    try:
+        from infra_agent.mcp_server import create_mcp_server
+        from infra_agent.service import AskService
+    except ImportError:
+        print(
+            'MCP 의존성이 없습니다. python -m pip install -e ".[mcp]" 로 설치하세요.',
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG_ERROR
+    try:
+        catalog = load_catalog(settings.catalog.path)
+    except CatalogError as exc:
+        print(redact(str(exc)), file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    create_mcp_server(AskService(settings, catalog)).run("stdio")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     configure_logging("WARNING")
@@ -476,6 +510,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_eval(args)
     if args.command == "serve":
         return _cmd_serve(args)
+    if args.command == "mcp":
+        return _cmd_mcp(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 

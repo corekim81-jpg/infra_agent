@@ -154,7 +154,8 @@ OpenTelemetry 및 Cilium/Hubble 등에서 수집된 데이터도 해당 저장�
 - [x] 근거 기반 결과 종합과 답변 형식 구현
 - [x] 단위·통합 테스트 및 답변 품질 평가 (대표 질문 7개)
 - [x] 컨테이너 실행과 Kubernetes 배포 구성 (Rocky Linux 9 이미지, 클러스터 내부 실행)
-- [ ] MCP를 통한 데이터 조회 경로 (조회 인터페이스만 분리됨, MCP 구현은 없음)
+- [x] MCP 서버로 제공 (다른 에이전트가 질문·연결 점검을 도구로 호출)
+- [ ] MCP를 통한 데이터 조회 경로 (조회 인터페이스만 분리됨, 대상 MCP 서버 미정)
 - [ ] 설치·운영·문제 해결 문서 작성 (설치·실행·문제 해결은 있음, 운영 절차 문서는 없음)
 
 ## 설치 및 실행
@@ -222,6 +223,11 @@ infra-agent serve --config config/local.yaml          # 기본 http://127.0.0.1:
 #   POST /v1/ask  {"question": "...", "range": "1h", "namespace": "..."}  (Authorization: Bearer <토큰>)
 #   GET  /v1/check, /healthz, /readyz
 
+# MCP 서버 (선택): python -m pip install -e ".[mcp]"
+infra-agent mcp --config config/local.yaml            # stdio (MCP 클라이언트가 이 명령을 실행)
+#   도구: ask_infra(질문 분석), check_infra_sources(연결 점검) — 모두 읽기 전용
+#   HTTP로 제공하려면 설정 api.mcp_enabled: true 후 serve → http://<주소>/mcp (같은 Bearer 토큰)
+
 # 테스트
 python -m pytest -m "not live"
 ```
@@ -234,9 +240,11 @@ Kubernetes API 연동(선택)은 전용 읽기 계정이 필요합니다. 클러
 
 HTTP API는 질문을 받아 CLI `ask`와 같은 답변을 JSON과 텍스트로 돌려줍니다. 토큰 없이는 질문을 받지 않고, 동시 처리 수와 질문 길이를 제한합니다. 클러스터 내부 상시 실행용 매니페스트는 `deploy/k8s/deployment.yaml`입니다(클러스터 내부 Service만, 외부 노출 없음).
 
+MCP 서버는 infra_agent를 다른 에이전트·MCP 클라이언트의 도구로 제공합니다(`ask_infra`, `check_infra_sources`). 로컬에서는 stdio(`infra-agent mcp`), 클러스터에서는 HTTP API와 같은 포트의 `/mcp`로 제공하며 같은 토큰이 필요합니다. 클러스터 내부에서의 MCP 호출은 아직 실제 환경에서 확인하지 못했습니다.
+
 이후 단계에서 다음 항목을 추가합니다.
 
-- MCP 경로
+- 데이터 조회를 MCP 서버로 수행하는 경로 (대상 서버 결정 후)
 
 ## 테스트 및 품질 평가
 

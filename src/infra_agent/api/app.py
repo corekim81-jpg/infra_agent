@@ -10,82 +10,55 @@
 - 동시 처리 수(`api.max_concurrent_requests`)와 질문 길이(`api.max_question_chars`)를 제한합니다.
 - 응답은 값 단위로 마스킹하고, 내부 오류 내용은 응답에 넣지 않습니다(요청 ID만 돌려줌).
 - API 문서·스키마 엔드포인트(/docs, /openapi.json)는 열지 않습니다.
+- `api.mcp_enabled`이면 MCP 서버를 `/mcp`로 함께 제공합니다(같은 토큰 필요, `mcp_server.py`).
 """
 
 from __future__ import annotations
 
-import asyncio
 import hmac
-import logging
 import os
-import re
-import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from infra_agent import __version__
-from infra_agent.answer.payload import answer_payload
-from infra_agent.answer.render import render_text
 from infra_agent.catalog import Catalog
 from infra_agent.config.settings import Settings
-from infra_agent.datasources.probe import SourceStatus, check_sources
-from infra_agent.orchestration.runner import AnswerBundle, answer_question
-from infra_agent.schemas import AgentStatus, TargetKind
-from infra_agent.security import default_redactor, redact, redact_values
-from infra_agent.timeutil import parse_duration
-
-logger = logging.getLogger(__name__)
-
-AnswerFn = Callable[..., Awaitable[AnswerBundle]]
-CheckFn = Callable[[Settings], Awaitable[list[SourceStatus]]]
-
-_TARGET_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
-REQUEST_MARGIN_SECONDS = 5.0
-"""요청 제한 시간(`execution.request_timeout_seconds`)에 더하는 여유 (종합·응답 작성)."""
+from infra_agent.datasources.probe import check_sources
+from infra_agent.orchestration.runner import answer_question
+from infra_agent.security import default_redactor
+from infra_agent.service import (
+    AnalysisTimeoutError,
+    AnswerFn,
+    AskRequest,
+    AskService,
+    BusyError,
+    CheckFn,
+    InternalError,
+    QuestionTooLongError,
+    ServiceError,
+)
 
 
 class ApiConfigError(Exception):
     """API를 시작할 수 없는 설정 (토큰 없음, Prometheus 비활성 등)."""
 
 
-class AskRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    question: str = Field(min_length=1)
-    range: str | None = None
-    """분석 구간 (예: 30m, 1h). 없으면 질문·기본값에서 정합니다."""
-    namespace: str | None = None
-    node: str | None = None
-    pod: str | None = None
-    use_llm: bool = True
-    """설정에서 모델을 쓰도록 했을 때만 의미가 있습니다. false면 규칙·코드 판정만 합니다."""
-    include_text: bool = True
-    """사람이 읽는 답변 텍스트(`text`)를 함께 돌려줄지."""
-
-    @field_validator("range")
-    @classmethod
-    def _check_range(cls, value: str | None) -> str | None:
-        if value is not None:
-            parse_duration(value)
-        return value
-
-    @field_validator("namespace", "node", "pod")
-    @classmethod
-    def _check_target(cls, value: str | None) -> str | None:
-        if value is not None and not _TARGET_RE.match(value):
-            raise ValueError("대상 이름 형식이 올바르지 않습니다")
-        return value
-
-
-def _overall_status(bundle: AnswerBundle) -> str:
-    statuses = {r.status for r in bundle.results}
-    if not statuses or statuses <= {AgentStatus.FAILED, AgentStatus.SKIPPED}:
-        return "failed"
-    return "ok" if statuses == {AgentStatus.SUCCESS} else "partial"
+def _http_error(exc: ServiceError) -> HTTPException:
+    if isinstance(exc, QuestionTooLongError):
+        return HTTPException(status_code=413, detail=exc.message)
+    if isinstance(exc, BusyError):
+        return HTTPException(
+            status_code=429,
+            detail=exc.message,
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    if isinstance(exc, AnalysisTimeoutError):
+        return HTTPException(status_code=504, detail=exc.message)
+    return HTTPException(status_code=500, detail=exc.message)
 
 
 def create_app(
@@ -110,14 +83,16 @@ def create_app(
     if token is not None:
         default_redactor.register(token)
 
+    service = AskService(settings, catalog, answer=answer, check=check)
+    mcp_app, lifespan = _mcp_mount(service, token) if cfg.mcp_enabled else (None, None)
     app = FastAPI(
         title="infra-agent",
         version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
-    active = 0
 
     def require_token(authorization: str | None = Header(default=None)) -> None:
         if token is None:
@@ -143,63 +118,80 @@ def create_app(
 
     @app.get("/v1/check", dependencies=[Depends(require_token)])
     async def v1_check() -> JSONResponse:
-        statuses = await check(settings)
-        enabled = [s for s in statuses if s.enabled]
-        ok = bool(enabled) and all(s.reachable and s.ready for s in enabled)
-        body = {
-            "ok": ok,
-            "profile": settings.profile.value,
-            "sources": [s.model_dump(mode="json") for s in statuses],
-        }
-        return JSONResponse(redact_values(body))
+        return JSONResponse(await service.check())
 
     @app.post("/v1/ask", dependencies=[Depends(require_token)])
     async def v1_ask(req: AskRequest) -> JSONResponse:
-        nonlocal active
-        if len(req.question) > cfg.max_question_chars:
-            raise HTTPException(
-                status_code=413, detail=f"질문이 너무 깁니다 (최대 {cfg.max_question_chars}자)"
-            )
-        if active >= cfg.max_concurrent_requests:
-            raise HTTPException(
-                status_code=429,
-                detail="처리 중인 질문이 많습니다. 잠시 후 다시 시도하세요",
-                headers={"Retry-After": "5"},
-            )
-        overrides = {
-            kind: value
-            for kind, value in (
-                (TargetKind.NAMESPACE, req.namespace),
-                (TargetKind.NODE, req.node),
-                (TargetKind.POD, req.pod),
-            )
-            if value
-        }
-        active += 1
         try:
-            bundle = await asyncio.wait_for(
-                answer(
-                    req.question,
-                    settings,
-                    catalog,
-                    range_override=req.range,
-                    target_overrides=overrides,
-                    use_llm=req.use_llm,
-                ),
-                timeout=settings.execution.request_timeout_seconds + REQUEST_MARGIN_SECONDS,
+            bundle = await service.ask(req)
+        except InternalError as exc:
+            return JSONResponse(
+                {"error": "internal_error", "error_id": exc.error_id}, status_code=500
             )
-        except TimeoutError:
-            raise HTTPException(status_code=504, detail="분석 제한 시간을 넘었습니다") from None
-        except Exception:
-            # 내부 오류 내용(주소·조회식 등)은 응답에 넣지 않고, 로그에서 찾을 수 있는 ID만 줍니다.
-            error_id = uuid.uuid4().hex[:12]
-            logger.exception("ask 처리 실패 (error_id=%s)", error_id)
-            return JSONResponse({"error": "internal_error", "error_id": error_id}, status_code=500)
-        finally:
-            active -= 1
-        payload: dict[str, Any] = {"status": _overall_status(bundle), **answer_payload(bundle)}
-        if req.include_text:
-            payload["text"] = redact(render_text(bundle))
-        return JSONResponse(redact_values(payload))
+        except ServiceError as exc:
+            raise _http_error(exc) from None
+        return JSONResponse(service.payload(bundle, include_text=req.include_text))
 
+    if mcp_app is not None:
+        # 위에서 정의한 경로에 맞지 않는 요청만 여기로 옵니다 (MCP는 /mcp).
+        app.mount("/", mcp_app)
     return app
+
+
+class _BearerGate:
+    """마운트한 ASGI 앱 앞에서 Bearer 토큰을 확인합니다 (토큰이 없으면 401)."""
+
+    def __init__(self, app: ASGIApp, token: str) -> None:
+        self._app = app
+        self._token = token.encode()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        header = dict(scope.get("headers") or []).get(b"authorization", b"")
+        scheme, _, given = header.partition(b" ")
+        if scheme.lower() != b"bearer" or not hmac.compare_digest(given.strip(), self._token):
+            response = JSONResponse(
+                {"detail": "인증 토큰이 필요합니다"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+        await self._app(scope, receive, send)
+
+
+def _mcp_mount(
+    service: AskService, token: str | None
+) -> tuple[ASGIApp, Callable[[FastAPI], AbstractAsyncContextManager[None]]]:
+    """MCP 서버(streamable HTTP, `/mcp`)를 만들고 FastAPI 수명 주기에 연결할 함수를 돌려줍니다."""
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        from infra_agent.mcp_server import create_mcp_server
+    except ImportError:
+        raise ApiConfigError(
+            'api.mcp_enabled에는 MCP 의존성이 필요합니다. python -m pip install -e ".[mcp]"'
+        ) from None
+    server = create_mcp_server(service)
+    # 토큰으로 보호할 때는 클러스터 서비스 이름 등 임의의 Host로 접속하므로 Host 검사를 끕니다.
+    # 익명 허용(로컬 개발)일 때는 SDK 기본값(로컬 주소만 허용)을 유지합니다.
+    security = (
+        TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        if token is not None
+        else None
+    )
+    inner: ASGIApp = server.streamable_http_app(
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        transport_security=security,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        async with server.session_manager.run():
+            yield
+
+    return (_BearerGate(inner, token) if token is not None else inner), lifespan

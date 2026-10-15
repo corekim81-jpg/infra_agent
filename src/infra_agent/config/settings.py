@@ -239,6 +239,8 @@ class ApiConfig(_Strict):
     max_concurrent_requests: int = Field(default=2, ge=1, le=32)
     """동시에 처리할 질문 수. 넘으면 429로 거절합니다(데이터 소스 보호)."""
     max_question_chars: int = Field(default=2000, ge=10, le=20000)
+    mcp_enabled: bool = False
+    """`serve`에서 MCP 서버를 `/mcp`로 함께 제공할지 (선택 의존성 [mcp], 같은 토큰 필요)."""
 
     @field_validator("token_env")
     @classmethod
