@@ -15,6 +15,9 @@
 #   TOKEN=$(kubectl -n infra-agent get secret infra-agent-api -o jsonpath='{.data.token}' | base64 -d)
 #   curl -s -X POST http://127.0.0.1:18080/v1/ask -H "Authorization: Bearer $TOKEN" \
 #     -H 'Content-Type: application/json' -d '{"question":"현재 서버 상태가 어때?"}'
+#
+# 다른 네임스페이스에서 MCP(/mcp) 호출 점검: deploy/k8s/job-mcp-check.yaml
+# 접속 가능한 네임스페이스 제한: deploy/k8s/networkpolicy-api-clients-example.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,11 +55,14 @@ spec:
                 secretKeyRef:
                   name: infra-agent-api
                   key: token
+          # 시작 직후 서버가 뜨기 전에 점검해 Warning 이벤트가 남지 않도록 처음 점검을 늦춥니다.
           readinessProbe:
             httpGet: {path: /readyz, port: http}
+            initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 15
             periodSeconds: 20
           securityContext:
             allowPrivilegeEscalation: false

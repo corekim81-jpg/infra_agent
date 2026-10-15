@@ -227,6 +227,8 @@ infra-agent serve --config config/local.yaml          # 기본 http://127.0.0.1:
 infra-agent mcp --config config/local.yaml            # stdio (MCP 클라이언트가 이 명령을 실행)
 #   도구: ask_infra(질문 분석), check_infra_sources(연결 점검) — 모두 읽기 전용
 #   HTTP로 제공하려면 설정 api.mcp_enabled: true 후 serve → http://<주소>/mcp (같은 Bearer 토큰)
+# 배포된 /mcp 점검: MCP 클라이언트로 연결·인증·도구 실행 확인 (토큰은 환경 변수 INFRA_AGENT_API_TOKEN)
+infra-agent mcp-check --url http://<주소>/mcp [--ask "현재 서버 상태가 어때?"] [--json]
 
 # 테스트
 python -m pytest -m "not live"
@@ -238,7 +240,7 @@ Kubernetes API 연동(선택)은 전용 읽기 계정이 필요합니다. 클러
 
 컨테이너 이미지(Rocky Linux 9)와 클러스터 내부 실행용 매니페스트는 `deploy/Containerfile`, `deploy/k8s/`에 있습니다. 클러스터 내부에서는 Pod의 전용 읽기 ServiceAccount 토큰으로 Kubernetes API에 접속하며(`datasources.kubernetes.auth: in_cluster`), 모델 없이 실행합니다. 데이터 소스 네임스페이스가 들어오는 트래픽을 기본 차단하면 조회 포트 허용 정책이 필요합니다(`deploy/k8s/networkpolicy-example.yaml`). 절차는 [docs/environment.md](docs/environment.md) 1.2절을 봅니다.
 
-HTTP API는 질문을 받아 CLI `ask`와 같은 답변을 JSON과 텍스트로 돌려줍니다. 토큰 없이는 질문을 받지 않고, 동시 처리 수와 질문 길이를 제한합니다. 클러스터 내부 상시 실행용 매니페스트는 `deploy/k8s/deployment.yaml`입니다(클러스터 내부 Service만, 외부 노출 없음).
+HTTP API는 질문을 받아 CLI `ask`와 같은 답변을 JSON과 텍스트로 돌려줍니다. 토큰 없이는 질문을 받지 않고, 동시 처리 수와 질문 길이를 제한합니다. 클러스터 내부 상시 실행용 매니페스트는 `deploy/k8s/deployment.yaml`입니다(클러스터 내부 Service만, 외부 노출 없음). 접속할 수 있는 네임스페이스를 제한하는 정책 예시는 `deploy/k8s/networkpolicy-api-clients-example.yaml`, 다른 네임스페이스에서 MCP 호출을 점검하는 Job은 `deploy/k8s/job-mcp-check.yaml`입니다.
 
 MCP 서버는 infra_agent를 다른 에이전트·MCP 클라이언트의 도구로 제공합니다(`ask_infra`, `check_infra_sources`). 로컬에서는 stdio(`infra-agent mcp`), 클러스터에서는 HTTP API와 같은 포트의 `/mcp`로 제공하며 같은 토큰이 필요합니다. 개발 서버 클러스터에서 port-forward로 도구 목록 조회와 두 도구 실행을 확인했습니다. 다른 네임스페이스의 Pod가 `/mcp`를 직접 호출하는 경우는 아직 확인하지 못했습니다.
 

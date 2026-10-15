@@ -8,6 +8,8 @@
   해석·원인 후보를 보완합니다(`--no-llm`으로 끌 수 있음).
 - `eval`: 대표 질문 평가 세트를 실행해 결정적 평가 기준으로 채점하고 `var/eval/`에 보고서를
   저장합니다.
+- `serve`·`mcp`: HTTP API·MCP 서버(stdio)를 실행합니다.
+- `mcp-check`: 배포된 MCP 엔드포인트(`/mcp`)를 MCP 클라이언트로 점검합니다.
 """
 
 from __future__ import annotations
@@ -149,6 +151,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "mcp", help="MCP 서버를 stdio로 실행합니다 (선택 의존성 [mcp] 필요, 읽기 전용 도구)"
     )
     _add_config_arg(mcp)
+    mcheck = sub.add_parser(
+        "mcp-check",
+        help="배포된 MCP 엔드포인트(/mcp)를 MCP 클라이언트로 점검합니다 (선택 의존성 [mcp] 필요)",
+    )
+    mcheck.add_argument(
+        "--url", required=True, help="MCP 엔드포인트 주소 (예: http://<서비스>:8080/mcp)"
+    )
+    mcheck.add_argument(
+        "--token-env",
+        default="INFRA_AGENT_API_TOKEN",
+        help="API 토큰을 읽을 환경 변수 이름 (토큰 값은 인자로 받지 않음)",
+    )
+    mcheck.add_argument(
+        "--ask", default=None, metavar="QUESTION", help="ask_infra 도구도 실행 (모델 호출 없이)"
+    )
+    mcheck.add_argument("--timeout", type=float, default=120.0, help="전체 제한 시간(초)")
+    mcheck.add_argument("--json", action="store_true", help="JSON으로 출력")
     return parser
 
 
@@ -493,6 +512,32 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_mcp_check(args: argparse.Namespace) -> int:
+    """배포된 `/mcp`를 점검합니다. 토큰은 환경 변수에서만 읽고 출력하지 않습니다."""
+    try:
+        from infra_agent.mcp_check import check_mcp, render
+    except ImportError:
+        print(
+            'MCP 의존성이 없습니다. python -m pip install -e ".[mcp]" 로 설치하세요.',
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG_ERROR
+    token = os.environ.get(args.token_env, "").strip()
+    if not token:
+        print(f"환경 변수 {args.token_env}에 API 토큰이 없습니다.", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    if not args.url.startswith(("http://", "https://")):
+        print("--url은 http:// 또는 https://로 시작해야 합니다.", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
+    result = asyncio.run(check_mcp(args.url, token, question=args.ask, timeout=args.timeout))
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    else:
+        print(render(result))
+    return EXIT_OK if result.ok else EXIT_UNAVAILABLE
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     configure_logging("WARNING")
@@ -512,6 +557,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_serve(args)
     if args.command == "mcp":
         return _cmd_mcp(args)
+    if args.command == "mcp-check":
+        return _cmd_mcp_check(args)
     return EXIT_CONFIG_ERROR  # pragma: no cover - argparse가 먼저 차단
 
 
