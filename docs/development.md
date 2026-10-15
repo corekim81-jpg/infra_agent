@@ -50,7 +50,7 @@ Linux(Python 3.11, 3.12)에서 `live`를 제외한 명령을 실행해 통과를
 
 ## 3. 디렉터리 구조
 
-현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `config/catalog/otel-demo.yaml`, `config/eval/questions.yaml`, `src/infra_agent/{config,schemas,security,datasources,discovery,catalog,tools,agents,orchestration,answer,evaluation,llm}`, `cli.py`, `timeutil.py`, `tests/{unit,live}`, `tests/fakes.py`, `tests/expr_prom.py`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다. (`datasources/`에는 prometheus·loki·tempo와 공통 HTTP·연결 점검만 있습니다.)
+현재 존재하는 항목: `pyproject.toml`, `config/example.yaml`, `config/catalog/otel-demo.yaml`, `config/eval/questions.yaml`, `src/infra_agent/{config,schemas,security,datasources,discovery,catalog,tools,agents,orchestration,answer,evaluation,llm,api}`, `cli.py`, `timeutil.py`, `service.py`, `mcp_server.py`, `mcp_check.py`, `deploy/{Containerfile,rbac,k8s}`, `tests/{unit,live}`, `tests/fakes.py`, `tests/expr_prom.py`, `tests/k8s_fake.py`, `tests/fixtures/synthetic`, `.github/workflows/ci.yml`. 나머지는 계획입니다. (`datasources/`에는 prometheus·loki·tempo·kubernetes와 공통 HTTP·연결 점검·조회 인터페이스(`base.py`)가 있고, hubble·mcp 전용 클라이언트는 없습니다.)
 
 ```text
 infra_agent/
@@ -147,7 +147,7 @@ infra_agent/
 | 12b | 대표 질문 품질 평가 | 평가 세트(`config/eval/questions.yaml`), 결정적 평가 기준(`evaluation`), `eval` 명령, [evaluation.md](evaluation.md) | 대표 질문 7개 평가 기록 | 12 | 완료 (#31, PR #32; 개발 서버 평가 모델 사용·미사용 각 7/7 통과, 사람 검토 반영 2026-10-01) |
 | 13a | 컨테이너·클러스터 내부 실행 | Containerfile(Rocky Linux 9), in-cluster 인증(ServiceAccount 토큰 재읽기), 설정 ConfigMap·연결 점검 Job·질문 Job 예시 | 클러스터 내부 읽기 전용 실행 확인 | 8b, 12 | 완료 (#39; 개발 서버에서 이미지 빌드, 클러스터 내부 연결 점검·질문 실행 확인 2026-10-02) |
 | 13b | HTTP API·상시 실행 | FastAPI 기반 HTTP API(`infra-agent serve`: 토큰 인증, 동시 처리·질문 길이 제한), Deployment·Service | 클러스터 내부에서 질문 요청·응답 | 13a | 완료 (#45; 개발 서버에서 Deployment 배포, 인증 거부·질문 응답 확인 2026-10-06) |
-| 13c | MCP 서버 제공 | infra_agent를 MCP 서버로 제공(`ask_infra`·`check_infra_sources`, stdio와 HTTP `/mcp`), 조회 인터페이스 분리(#47) | MCP 클라이언트로 도구 호출 | 13b | 구현 (#49; 단위 테스트·로컬 stdio 실행, 개발 서버 port-forward로 `tools/list`·`tools/call` 확인. 다른 네임스페이스 Pod에서의 호출은 미확인) |
+| 13c | MCP 서버 제공 | infra_agent를 MCP 서버로 제공(`ask_infra`·`check_infra_sources`, stdio와 HTTP `/mcp`), 조회 인터페이스 분리(#47) | MCP 클라이언트로 도구 호출 | 13b | 구현 (#49; 단위 테스트·로컬 stdio 실행, 개발 서버 port-forward로 `tools/list`·`tools/call` 확인. 다른 네임스페이스 Pod에서의 호출은 점검 수단(#52 `mcp-check`·점검 Job)을 만들었으나 미확인) |
 | 13d | MCP 데이터 조회 경로 | 데이터 접근 계층의 MCP 구현 (대상 MCP 서버 결정 필요) | MCP로 같은 조회 수행 | 13c | 보류 (대상 서버 미정) |
 
 8·9·11은 서로 독립적이므로 순서를 바꾸거나 병행할 수 있습니다. 실제 조회 데이터를 모델에 전달하는 동작(`data_policy`가 `none`이 아닌 경우)은 개발 환경(OTel Demo)에서만 `full`로 결정되었습니다(2026-09-29). 운영 환경의 정책은 결정 전까지 `none`을 사용합니다.
@@ -173,6 +173,7 @@ infra_agent/
 | --- | --- | --- |
 | `kubernetes: 연결 실패 [missing_credential]` | `INFRA_AGENT_KUBECONFIG`(또는 `kubeconfig_env`)가 설정되지 않음 | 전용 읽기 계정 kubeconfig 경로를 지정 (environment.md 3.5절) |
 | `kubernetes: 연결 실패 [kubeconfig_error] … 허용하지 않는 인증 설정(client-certificate-data …)` | 관리자·개인 kubeconfig를 지정함 | `deploy/rbac/make-reader-config.sh`로 만든 토큰 kubeconfig 사용 |
+| `mcp-check`: `오류 [connect_error]`·`[timeout]`·`[unauthorized]`·`[not_found]` | `/mcp`까지의 네트워크 경로, 토큰, `api.mcp_enabled` 중 하나 | 오류 코드별 확인 항목은 environment.md 1.2절 "배포된 MCP 점검" |
 | `kubernetes: 연결 실패 [http_401] 인증 실패` | 토큰 만료 또는 다른 클러스터의 토큰 | kubeconfig를 다시 만듦 |
 | `kubernetes: 연결 실패 [http_403] 권한 없음` | ClusterRole·바인딩이 적용되지 않음 | `kubectl apply -f deploy/rbac/infra-agent-reader.yaml` |
 | `kubernetes: 응답했지만 사용 불가 [not_read_only]` | 계정에 쓰기·Pod 실행·프록시·secrets 읽기 권한이 있거나 권한 목록을 확인하지 못함 | 전용 읽기 계정 사용. 이 상태에서는 질문 처리 때도 API를 조회하지 않음 |

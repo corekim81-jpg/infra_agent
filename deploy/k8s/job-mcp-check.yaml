@@ -1,0 +1,52 @@
+# 다른 네임스페이스에서 infra-agent MCP 엔드포인트(/mcp)를 점검하는 Job (#52).
+# 호출하는 에이전트가 있을 네임스페이스에서, 같은 네트워크 경로로 연결·토큰 인증·도구 실행을 확인합니다.
+# 실행하는 도구는 읽기 전용입니다(도구 목록, check_infra_sources). infra_agent 설정·Kubernetes API 권한은
+# 쓰지 않습니다.
+#
+# 먼저: deploy/k8s/deployment.yaml 배포, 설정 api.mcp_enabled: true
+#   kubectl create namespace mcp-client-test
+#   kubectl label namespace mcp-client-test infra-agent.io/api-client=true   # 접근 제한 정책을 쓸 때
+#   # 토큰은 infra-agent 네임스페이스의 Secret 값을 이 네임스페이스에 복사합니다(값은 출력하지 않음).
+#   kubectl -n mcp-client-test create secret generic infra-agent-api-client \
+#     --from-literal=token="$(kubectl -n infra-agent get secret infra-agent-api -o jsonpath='{.data.token}' | base64 -d)"
+#   kubectl apply -f deploy/k8s/job-mcp-check.yaml
+#   kubectl -n mcp-client-test wait --for=condition=complete --timeout=180s job/infra-agent-mcp-check
+#   kubectl -n mcp-client-test logs job/infra-agent-mcp-check
+#   kubectl delete namespace mcp-client-test        # 점검이 끝나면 정리(토큰 복사본도 함께 삭제)
+# 실패하면 Job이 종료 코드 1로 끝나고, 로그의 [오류 코드]와 안내로 막힌 단계를 확인합니다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: infra-agent-mcp-check
+  namespace: mcp-client-test
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false   # Kubernetes API를 쓰지 않음
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp-check
+          image: infra-agent:dev            # 빌드한 이미지 이름으로 바꾸세요
+          imagePullPolicy: IfNotPresent
+          args: ["mcp-check", "--url", "http://infra-agent.infra-agent.svc:8080/mcp"]
+          env:
+            - name: INFRA_AGENT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: infra-agent-api-client
+                  key: token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}

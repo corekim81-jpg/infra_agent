@@ -1,0 +1,28 @@
+# 예시: infra-agent의 HTTP API·MCP(포트 8080)에 들어오는 접속을, 라벨을 붙인 네임스페이스로만 제한합니다 (#52).
+#
+# - 이 정책이 없으면 클러스터의 모든 Pod가 Service 주소로 접속할 수 있습니다(토큰은 여전히 필요).
+#   호출하는 에이전트가 정해지면 그 네임스페이스에만 라벨을 붙이고 이 정책을 적용하는 것을 권장합니다.
+#     kubectl label namespace <호출하는 네임스페이스> infra-agent.io/api-client=true
+# - kubectl port-forward는 Pod 안에서 바로 연결되므로 이 정책의 영향을 받지 않습니다.
+# - 적용 후 infra-agent Pod가 Ready가 되지 않으면 CNI가 노드(kubelet)의 상태 점검까지 막는 경우입니다.
+#   노드 주소 대역을 ipBlock으로 추가하세요(Cilium 기본 설정은 노드의 점검을 허용합니다).
+# - 호출하는 쪽 네임스페이스가 나가는 트래픽을 기본 차단(default-deny egress)한다면, 그쪽에도
+#   infra-agent 네임스페이스 8080/TCP와 DNS(kube-system 53/UDP·TCP)로 나가는 허용 정책이 필요합니다.
+# - 네트워크 정책을 GitOps(Argo CD 등)로 관리한다면 직접 적용하지 말고 그 저장소에 추가하세요.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-clients-to-infra-agent
+  namespace: infra-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: infra-agent
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              infra-agent.io/api-client: "true"
+      ports:
+        - {port: 8080, protocol: TCP}

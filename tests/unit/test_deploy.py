@@ -88,3 +88,37 @@ def test_deployment_serves_api_with_token_from_secret() -> None:
     assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
     assert docs["Service"]["spec"]["type"] == "ClusterIP"  # 외부 노출 없음
     assert "Secret" not in docs and "Ingress" not in docs
+
+
+def test_mcp_check_job_uses_token_from_secret_without_cluster_access() -> None:
+    job = _load("job-mcp-check.yaml")
+    assert job["metadata"]["namespace"] != "infra-agent"  # 다른 네임스페이스에서 점검
+    pod = job["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert "serviceAccountName" not in pod
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    (container,) = pod["containers"]
+    assert container["args"][:2] == ["mcp-check", "--url"]
+    assert container["args"][2].endswith(".svc:8080/mcp")
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    (env,) = container["env"]
+    assert env["name"] == "INFRA_AGENT_API_TOKEN" and "value" not in env
+    assert env["valueFrom"]["secretKeyRef"]["key"] == "token"
+
+
+def test_api_clients_policy_limits_ingress_to_labeled_namespaces() -> None:
+    doc = _load("networkpolicy-api-clients-example.yaml")
+    assert doc["kind"] == "NetworkPolicy" and doc["metadata"]["namespace"] == "infra-agent"
+    assert doc["spec"]["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": "infra-agent"}
+    (rule,) = doc["spec"]["ingress"]
+    (source,) = rule["from"]
+    assert source == {"namespaceSelector": {"matchLabels": {"infra-agent.io/api-client": "true"}}}
+    assert rule["ports"] == [{"port": 8080, "protocol": "TCP"}]
+
+
+def test_deployment_probes_wait_for_startup() -> None:
+    text = (ROOT / "deploy/k8s/deployment.yaml").read_text(encoding="utf-8")
+    deployment = next(d for d in yaml.safe_load_all(text) if d and d["kind"] == "Deployment")
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    assert container["readinessProbe"]["initialDelaySeconds"] > 0
+    assert container["livenessProbe"]["initialDelaySeconds"] > 0

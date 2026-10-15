@@ -51,6 +51,8 @@
 | [`deploy/k8s/job-ask.yaml`](../deploy/k8s/job-ask.yaml) | 질문 한 건을 실행하는 Job 예시 (HTTP API 제공 전의 임시 실행 방법) |
 | [`deploy/k8s/deployment.yaml`](../deploy/k8s/deployment.yaml) | HTTP API 상시 실행 Deployment와 클러스터 내부 Service (#45). API 토큰은 Secret `infra-agent-api`에서 받음 |
 | [`deploy/k8s/networkpolicy-example.yaml`](../deploy/k8s/networkpolicy-example.yaml) | 데이터 소스 네임스페이스가 들어오는 트래픽을 기본 차단할 때, infra-agent 네임스페이스에서 조회 포트로의 접속을 허용하는 NetworkPolicy 예시 |
+| [`deploy/k8s/networkpolicy-api-clients-example.yaml`](../deploy/k8s/networkpolicy-api-clients-example.yaml) | infra-agent의 HTTP API·MCP(8080)에 들어오는 접속을 라벨 `infra-agent.io/api-client: "true"`가 붙은 네임스페이스로만 제한하는 예시 (#52) |
+| [`deploy/k8s/job-mcp-check.yaml`](../deploy/k8s/job-mcp-check.yaml) | 다른 네임스페이스(`mcp-client-test`)에서 `infra-agent mcp-check`로 Service 주소의 `/mcp`를 점검하는 Job (#52). 토큰은 그 네임스페이스에 복사한 Secret에서 받음 |
 
 - **Kubernetes API 인증:** `datasources.kubernetes.auth: in_cluster`이면 Pod에 마운트된 ServiceAccount 토큰·CA(`/var/run/secrets/kubernetes.io/serviceaccount`)와 `KUBERNETES_SERVICE_HOST`·`PORT`로 접속합니다. 토큰은 주기적으로 교체되므로 요청마다 파일 변경을 확인해 다시 읽습니다. kubeconfig 파일은 쓰지 않습니다.
 - **계정:** Job은 3.5절의 전용 읽기 계정(`infra-agent-reader`)으로 실행합니다. 그 ServiceAccount는 토큰 자동 마운트가 꺼져 있고 Job의 Pod에서만 켭니다. 권한 점검(쓰기·실행·프록시·secrets 권한이 있으면 조회하지 않음)은 클러스터 밖 실행과 같습니다.
@@ -86,6 +88,18 @@
   - `tools/call ask_infra`(Pod 재시작·Pending 질문, `use_llm: false`): HTTP 200, `isError: false`. CLI `ask`와 같은 형식의 답변이 왔고 Kubernetes Agent만 실행됨(Prometheus 지표 11개, Kubernetes API 권한·Pod·Warning 이벤트 조회).
   - 확인하지 않은 것: 다른 네임스페이스의 Pod에서 Service 주소로 `/mcp`를 직접 호출하는 경우(호출하는 쪽 네임스페이스에서 infra-agent로 나가는 네트워크 정책이 필요할 수 있음), 실제 MCP 클라이언트(에이전트)의 연결, 토큰 없는 `/mcp` 호출의 401(단위 테스트로만 확인).
 - **개발 서버 확인(#45, 2026-10-06, 사용자 실행):** 이미지 재빌드 후 Deployment가 정상 배포됐고, port-forward로 `/healthz` 응답, 토큰 없는 질문 401, 토큰 있는 질문의 답변(`status: ok`, Server Agent 성공)을 확인했습니다. 처음에는 로컬 포트가 다른 프로그램과 겹쳐 엉뚱한 404가 나왔으므로, port-forward는 비어 있는 포트를 쓰고 `/healthz`로 먼저 확인합니다. 확인하지 않은 것: 동시 요청 제한(429)·제한 시간(504)의 클러스터 내 동작, 장시간 실행 중 토큰 교체.
+
+**배포된 MCP 점검 (`mcp-check`, #52)** — 호출할 위치에서 공식 MCP 클라이언트로 `/mcp`에 접속해 연결, 토큰 인증, 도구 목록, `check_infra_sources` 실행을 차례로 확인합니다. `--ask "<질문>"`을 주면 `ask_infra`도 모델 없이 실행합니다. 토큰은 환경 변수(기본 `INFRA_AGENT_API_TOKEN`, `--token-env`로 변경)에서만 읽고 출력하지 않습니다. 모든 단계와 데이터 소스가 정상이면 종료 코드 0, 아니면 1입니다. 실패하면 막힌 단계를 오류 코드로 구분합니다.
+
+| 오류 코드 | 뜻 | 확인할 것 |
+| --- | --- | --- |
+| `connect_error` | 주소에 연결하지 못함 | Service 이름·포트, 호출하는 쪽과 infra-agent 네임스페이스의 네트워크 정책 |
+| `timeout` | 응답 시간 초과 | 네트워크 정책에서 패킷이 버려지는 경우에도 이렇게 보임 |
+| `unauthorized` | HTTP 401·403 | 토큰이 Secret `infra-agent-api`의 값과 같은지 |
+| `not_found` | HTTP 404 | 서버 설정 `api.mcp_enabled: true`인지 |
+| `protocol_error`, `tool_error` | MCP 응답·도구 실행 오류 | 서버 로그(`kubectl -n infra-agent logs deploy/infra-agent`) |
+
+`check_infra_sources`가 데이터 소스 일부를 사용 불가로 보고하면 MCP 경로는 정상이어도 결과는 실패입니다(`infra-agent check`와 같은 기준). 다른 네임스페이스에서 점검할 때는 `deploy/k8s/job-mcp-check.yaml` 상단의 절차를 따릅니다(점검용 네임스페이스 생성, 토큰 Secret 복사, Job 실행, 로그 확인, 네임스페이스 삭제).
 
 **실행 절차 (사용자 작업, k3d 기준)**
 
